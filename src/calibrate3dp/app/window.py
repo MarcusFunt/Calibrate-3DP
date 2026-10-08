@@ -11,9 +11,12 @@ from calibrate3dp.app.pages.profile_selection_page import ProfileSelectionPage
 from calibrate3dp.app.pages.experiment_review_page import ExperimentReviewPage
 from calibrate3dp.app.pages.generation_page import GenerationPage
 from calibrate3dp.app.pages.results_page import ResultsPage
+from calibrate3dp.app.pages.recommendation_page import RecommendationPage
 from calibrate3dp.app.pages.module_page import ModulePage
 from calibrate3dp.app.pages.setup_page import SetupPage
+from calibrate3dp.app.services.acceptance_service import AcceptanceService
 from calibrate3dp.app.services.experiment_service import ExperimentService
+from calibrate3dp.app.services.generation_port import GenerationState, ValidationState
 from calibrate3dp.app.services.profile_service import ProfileService
 
 
@@ -81,6 +84,10 @@ class AppShell:
         self._experiment_review_page: ExperimentReviewPage | None = None
         self._generation_page: GenerationPage | None = None
         self._results_page: ResultsPage | None = None
+        self._recommendation_page: RecommendationPage | None = None
+        self._confirmation_plan: ExperimentPlan | None = None
+        self._confirmation_run_id: str | None = None
+        self._last_synchronized_plan: ExperimentPlan | None = None
         self.routes = RouteState()
         self._dpg = dpg_module
         self._context_created = False
@@ -451,14 +458,25 @@ class AppShell:
                 generation_service=self.services.get("generation_service"),
                 on_recovery=self._on_generation_recovery,
                 on_results=self._on_results_ready,
+                on_back=self._on_generation_back,
             )
             self._generation_page.render()
             self._results_page = ResultsPage(
                 dpg,
                 self.services.get("session_service"),
                 on_back=self._on_results_back,
+                on_recommendation=self._on_recommendation_ready,
             )
             self._results_page.render()
+            self._recommendation_page = RecommendationPage(
+                dpg,
+                AcceptanceService(self.experiment_service),
+                self.experiment_service,
+                self.services.get("session_service"),
+                on_refinement_ready=self._on_refinement_ready,
+                on_confirmation_requested=self._on_confirmation_requested,
+            )
+            self._recommendation_page.render()
 
             dpg.add_spacer(height=18)
             dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
@@ -496,13 +514,14 @@ class AppShell:
         if (
             self.experiment_plan is not None
             and self.profile_selection is not None
-            and page.plan is not self.experiment_plan
+            and self._last_synchronized_plan is not self.experiment_plan
         ):
             page.set_context(
                 session=self.services.get("session"),
                 plan=self.experiment_plan,
                 profiles=self.profile_selection,
             )
+            self._last_synchronized_plan = self.experiment_plan
             if self._dpg is not None:
                 self._dpg.configure_item("experiment_review_panel", show=False)
                 self._dpg.configure_item("generation_panel", show=True)
@@ -515,15 +534,111 @@ class AppShell:
         if self._results_page is None or self.experiment_plan is None:
             return
         session = self._generation_page.session if self._generation_page is not None else None
+        if self._confirmation_plan is not None:
+            generation_page = self._generation_page
+            if (
+                self._recommendation_page is not None
+                and generation_page is not None
+                and generation_page.state is GenerationState.SUCCEEDED
+                and generation_page.validation_state is ValidationState.VALID
+            ):
+                self._recommendation_page.record_confirmation(
+                    self._confirmation_plan,
+                    state=generation_page.state,
+                    validation_state=generation_page.validation_state,
+                    run_id=self._confirmation_run_id,
+                )
+                if self._dpg is not None:
+                    self._dpg.configure_item("generation_panel", show=False)
+                    self._dpg.configure_item("generation_back", show=False)
+                    self._dpg.configure_item("recommendation_panel", show=True)
+            self._confirmation_plan = None
+            self._confirmation_run_id = None
+            return
         self._results_page.set_context(session=session, plan=self.experiment_plan)
         if self._dpg is not None:
             self._dpg.configure_item("generation_panel", show=False)
+            self._dpg.configure_item("generation_back", show=False)
             self._dpg.configure_item("results_panel", show=True)
 
     def _on_results_back(self) -> None:
         if self._dpg is not None:
+            self._dpg.configure_item("recommendation_panel", show=False)
             self._dpg.configure_item("results_panel", show=False)
             self._dpg.configure_item("generation_panel", show=True)
+
+    def _on_recommendation_ready(self) -> None:
+        if (
+            self._recommendation_page is None
+            or self._results_page is None
+            or self.experiment_plan is None
+            or self._results_page.results is None
+        ):
+            return
+        self._recommendation_page.set_context(
+            session=self._results_page.session,
+            plan=self.experiment_plan,
+            results=self._results_page.results,
+        )
+        if self._dpg is not None:
+            self._dpg.configure_item("results_panel", show=False)
+            self._dpg.configure_item("recommendation_panel", show=True)
+
+    def _on_refinement_ready(self, session: Any, plan: ExperimentPlan) -> None:
+        if self._generation_page is None or self.profile_selection is None:
+            return
+        self.experiment_plan = plan
+        self._last_synchronized_plan = plan
+        self._generation_page.set_context(
+            session=session,
+            plan=plan,
+            profiles=self.profile_selection,
+        )
+        if self._dpg is not None:
+            self._dpg.configure_item("recommendation_panel", show=False)
+            self._dpg.configure_item("generation_back", show=True)
+            self._dpg.configure_item("generation_panel", show=True)
+
+    def _on_confirmation_requested(
+        self, session: Any, plan: ExperimentPlan, run_id: str
+    ) -> None:
+        if self._generation_page is None or self.profile_selection is None:
+            return
+        self._confirmation_plan = plan
+        self._confirmation_run_id = run_id
+        self._generation_page.set_context(
+            session=session,
+            plan=plan,
+            profiles=self.profile_selection,
+        )
+        if self._dpg is not None:
+            self._dpg.configure_item("recommendation_panel", show=False)
+            self._dpg.configure_item("generation_back", show=True)
+            self._dpg.configure_item("generation_panel", show=True)
+
+    def _on_generation_back(self) -> None:
+        generation_page = self._generation_page
+        if generation_page is not None:
+            if generation_page.state in {GenerationState.QUEUED, GenerationState.RUNNING}:
+                return
+            if self._confirmation_plan is not None and generation_page.state in {
+                GenerationState.SUCCEEDED,
+                GenerationState.FAILED,
+                GenerationState.CANCELED,
+            }:
+                if self._recommendation_page is not None:
+                    self._recommendation_page.record_confirmation(
+                        self._confirmation_plan,
+                        state=generation_page.state,
+                        validation_state=generation_page.validation_state,
+                        run_id=self._confirmation_run_id,
+                    )
+                self._confirmation_plan = None
+                self._confirmation_run_id = None
+        if self._dpg is not None:
+            self._dpg.configure_item("generation_back", show=False)
+            self._dpg.configure_item("generation_panel", show=False)
+            self._dpg.configure_item("recommendation_panel", show=True)
 
     def _on_generation_recovery(self) -> None:
         """Return to the setup view so executable/profile configuration can be checked."""

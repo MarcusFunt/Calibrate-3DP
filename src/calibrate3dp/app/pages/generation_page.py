@@ -34,12 +34,14 @@ class GenerationPage:
         generation_service: GenerationService | None = None,
         on_recovery: Callable[[], None] | None = None,
         on_results: Callable[[], None] | None = None,
+        on_back: Callable[[], None] | None = None,
     ) -> None:
         self.experiment_service = experiment_service
         self.dpg = dpg
         self.generation_service = generation_service
         self.on_recovery = on_recovery
         self.on_results = on_results
+        self.on_back = on_back
         self.session: SessionSnapshot | None = None
         self.plan: ExperimentPlan | None = None
         self.profiles: ProfileSelection | None = None
@@ -178,6 +180,8 @@ class GenerationPage:
                                callback=self._on_cancel)
                 dpg.add_button(label="Open Results", tag="generation_results", enabled=False,
                                callback=self._on_results)
+                dpg.add_button(label="Back to recommendation", tag="generation_back", show=False,
+                               callback=self._on_back)
                 dpg.add_button(label="Review Orca setup", tag="generation_recovery", show=False,
                                callback=self._on_recovery)
             dpg.add_spacer(height=8)
@@ -408,6 +412,11 @@ class GenerationPage:
         else:
             self.phase = "Generation is validated; results entry is the next workflow step."
             self._update_ui()
+
+    def _on_back(self, sender: Any, app_data: Any, user_data: Any = None) -> None:
+        del sender, app_data, user_data
+        if self.on_back is not None:
+            self.on_back()
 
     def _on_recovery(self, sender: Any, app_data: Any, user_data: Any = None) -> None:
         del sender, app_data, user_data

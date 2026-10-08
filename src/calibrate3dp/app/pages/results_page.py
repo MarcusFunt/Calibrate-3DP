@@ -28,11 +28,13 @@ class ResultsPage:
         *,
         clock: Callable[[], float] = monotonic,
         on_back: Callable[[], None] | None = None,
+        on_recommendation: Callable[[], None] | None = None,
     ) -> None:
         self.dpg = dpg
         self.session_service = session_service
         self.clock = clock
         self.on_back = on_back
+        self.on_recommendation = on_recommendation
         self.session: SessionSnapshot | None = None
         self.plan: ExperimentPlan | None = None
         self.results: ExperimentResults | None = None
@@ -125,7 +127,7 @@ class ResultsPage:
                     callback=self._on_toggle_tie,
                 )
                 dpg.add_button(
-                    label="Accept selected",
+                    label="Review recommendation",
                     tag="results_accept",
                     enabled=False,
                     callback=self._on_accept,
@@ -403,7 +405,7 @@ class ResultsPage:
         self._configure(
             "results_accept",
             enabled=self.can_accept and self.session is not None and self.session_service is not None,
-            label="Accepted" if self._results().accepted is True else "Accept selected",
+            label="Review recommendation",
         )
         if self._editor is not None:
             selected_editor = self._editor.selected_candidate_id or (ids[0] if ids else None)
@@ -441,7 +443,8 @@ class ResultsPage:
 
     def _on_accept(self, sender: Any, app_data: Any, user_data: Any = None) -> None:
         del sender, app_data, user_data
-        self.set_accepted(True)
+        if self.can_accept and self.on_recommendation is not None:
+            self.on_recommendation()
 
     def _on_retry_save(self, sender: Any, app_data: Any, user_data: Any = None) -> None:
         del sender, app_data, user_data

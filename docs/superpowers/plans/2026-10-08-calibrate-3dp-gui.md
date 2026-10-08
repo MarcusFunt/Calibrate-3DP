@@ -251,12 +251,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - A tied result requires the user to choose a tie-break candidate or explicitly start a confirmation comparison. The system never averages a tie into a new setting.
 - The final result cannot be accepted until the required confirmation run has succeeded and passed validation, except when the user selects a documented opt-out and the session report records it.
 
-- [ ] Write tests test_boundary_winner_explains_extension, test_interior_winner_explains_narrowing, test_tie_requires_explicit_resolution, test_acceptance_waits_for_confirmation_run, and test_opt_out_is_recorded.
-- [ ] Run the recommendation UI test file and verify it fails before implementation.
-- [ ] Implement recommendation cards showing previous/current ranges, selected candidate, next range, changed dimensions, fixed values, limits, and exact rationale.
-- [ ] Implement explicit Accept, Refine, Extend Boundary, and Mark Inconclusive actions; hide actions that the current module policy cannot support.
-- [ ] Implement confirmation-run state and ensure failed/canceled confirmation jobs do not unlock profile export.
-- [ ] Run recommendation, ironing, results, and session-resume tests.
+- [x] Write tests test_boundary_winner_explains_extension, test_interior_winner_explains_narrowing, test_tie_requires_explicit_resolution, test_acceptance_waits_for_confirmation_run, and test_opt_out_is_recorded.
+- [x] Run the recommendation UI test file and verify it fails before implementation.
+- [x] Implement recommendation cards showing previous/current ranges, selected candidate, next range, changed dimensions, fixed values, limits, and exact rationale.
+- [x] Implement explicit Accept, Refine, Extend Boundary, and Mark Inconclusive actions; hide actions that the current module policy cannot support.
+- [x] Implement confirmation-run state and ensure failed/canceled confirmation jobs do not unlock profile export.
+- [x] Run recommendation, ironing, results, and session-resume tests.
+- [x] Commit as feat: add explainable calibration refinement.
 - [ ] Commit as feat: add explainable calibration refinement.
 
 ## Task 8: Add Reviewed Profile Export

@@ -201,6 +201,25 @@ class SessionRepository:
             raise
         return relative_path.as_posix()
 
+    def write_json_artifact(
+        self, session_id: str, relative_path: str, payload: Any
+    ) -> str:
+        """Atomically write JSON evidence beneath a saved session directory."""
+        session_root = self._session_root(session_id).resolve()
+        self._require_session_exists(session_id)
+        destination = self._resolve_relative_path(session_root, relative_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination = self._resolve_relative_path(session_root, relative_path)
+        self._write_json_atomic(destination, self._encode_json(payload))
+        return PurePosixPath(relative_path).as_posix()
+
+    def read_json_artifact(self, session_id: str, relative_path: str) -> Any:
+        """Read one JSON artifact after checking its session-relative path."""
+        session_root = self._session_root(session_id).resolve()
+        self._require_session_exists(session_id)
+        path = self._resolve_relative_path(session_root, relative_path)
+        return self._read_json(path, session_id)
+
     def load(self, session_id: str) -> SessionSnapshot:
         """Restore a complete session, including its separate profile snapshot."""
         connection = self._connect()
@@ -339,6 +358,17 @@ class SessionRepository:
         if any(character in session_id for character in ("/", "\\", ":")) or session_id in {".", ".."}:
             raise SessionStateError("session id must be a safe path component")
         return self.sessions_root / session_id
+
+    def _require_session_exists(self, session_id: str) -> None:
+        connection = self._connect()
+        try:
+            exists = connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if exists is None:
+            raise SessionNotFoundError(f"session {session_id!r} was not found")
 
     @staticmethod
     def _resolve_relative_path(session_root: Path, relative_path: str) -> Path:
