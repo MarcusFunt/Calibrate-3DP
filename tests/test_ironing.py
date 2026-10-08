@@ -124,6 +124,19 @@ class IroningExperimentTests(unittest.TestCase):
                 limits={"ironing_flow": (7, 15), "ironing_speed": (0, 100)},
             )
 
+    def test_percent_flow_values_preserve_orca_percent_units(self):
+        iron, _ = self.api()
+        plan = iron.create_initial_ironing_experiment(
+            plan_id="iron-percent",
+            baseline_settings={"ironing_flow": "15%", "ironing_speed": "15"},
+            flow_values=(10, 15, 20),
+            speed_values=(10, 15, 20),
+        )
+
+        self.assertEqual(plan.settings_for("I001")["ironing_flow"], "10%")
+        self.assertEqual(plan.settings_for("I005")["ironing_flow"], "15%")
+        self.assertEqual(plan.settings_for("I009")["ironing_flow"], "20%")
+
     def test_initial_ironing_grid_rejects_missing_or_invalid_parameters(self):
         iron, _ = self.api()
         with self.assertRaises(iron.IroningCalibrationError):
@@ -137,6 +150,7 @@ class IroningExperimentTests(unittest.TestCase):
             ((8, 10, 12), (1, 1, 2)),
             ((8, 10, 13), (20, 30, 40)),
             ((8, 10, 12), (20, 25, 40)),
+            ((8, 10, 12), ("20%", "30%", "40%")),
             ((-1, 0, 1), (20, 30, 40)),
             ((8, 10, 12), (0, 30, 60)),
         ):

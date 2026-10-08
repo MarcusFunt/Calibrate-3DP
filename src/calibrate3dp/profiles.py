@@ -88,7 +88,7 @@ class ProfileDocument:
         """Load one Orca-style preset JSON without discarding unrecognized keys."""
         source_path = Path(path)
         try:
-            payload = json.loads(source_path.read_text(encoding="utf-8"))
+            payload = json.loads(source_path.read_text(encoding="utf-8-sig"))
         except OSError as exc:
             raise InvalidProfileDocumentError(
                 f"could not read profile JSON {source_path}: {exc}"
