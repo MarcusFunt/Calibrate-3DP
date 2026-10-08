@@ -55,3 +55,12 @@ class JobLogPanel:
             self.dpg.set_value("generation_stdout", self.stdout)
         if self.dpg.does_item_exist("generation_stderr"):
             self.dpg.set_value("generation_stderr", self.stderr)
+
+    def clear(self) -> None:
+        """Clear logs when a different session or plan is opened."""
+        self.stdout = ""
+        self.stderr = ""
+        if self.dpg.does_item_exist("generation_stdout"):
+            self.dpg.set_value("generation_stdout", "")
+        if self.dpg.does_item_exist("generation_stderr"):
+            self.dpg.set_value("generation_stderr", "")

@@ -128,6 +128,14 @@ class GenerationPage:
         """Set the accepted plan and build a preview without running Orca."""
         if self.state in _ACTIVE_STATES:
             raise RuntimeError("cannot replace the experiment while a generation job is active")
+        previous_session_id = self.session.session_id if self.session is not None else None
+        previous_plan_id = self.plan.plan_id if self.plan is not None else None
+        current_session_id = session.session_id if session is not None else None
+        if self.plan is not None and (
+            previous_session_id != current_session_id
+            or previous_plan_id != plan.plan_id
+        ):
+            self._reset_attempt_state()
         self.session = session
         self.plan = plan
         self.profiles = profiles
@@ -152,6 +160,24 @@ class GenerationPage:
         self.phase = "Review the candidate map before generation."
         if self._rendered:
             self._render_candidate_map()
+            self._update_ui()
+
+    def _reset_attempt_state(self) -> None:
+        self.state = None
+        self.phase = "Review the candidate map before generation."
+        self.validation_state = ValidationState.NOT_RUN
+        self.validation_messages = ()
+        self.progress_percent = None
+        self.artifact_paths.clear()
+        self.invalid_artifact_paths.clear()
+        self._logs.clear()
+        self._cancel_requested.clear()
+        while True:
+            try:
+                self._pending.get_nowait()
+            except Empty:
+                break
+        if self._rendered:
             self._update_ui()
 
     def render(self) -> None:

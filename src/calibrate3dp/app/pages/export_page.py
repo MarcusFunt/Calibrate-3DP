@@ -23,10 +23,14 @@ class ExportPage:
         export_service: ExportService,
         *,
         on_back: Callable[[], None] | None = None,
+        on_exported: Callable[[SessionSnapshot], None] | None = None,
+        default_export_root: str | Path | None = None,
     ) -> None:
         self.dpg = dpg
         self.export_service = export_service
         self.on_back = on_back
+        self.on_exported = on_exported
+        self.default_export_root = Path(default_export_root) if default_export_root else None
         self.session: SessionSnapshot | None = None
         self.draft: ExportDraft | None = None
         self.result: ExportResult | None = None
@@ -89,6 +93,11 @@ class ExportPage:
             return None
         self.result = result
         self.error = ""
+        if self.on_exported is not None and self.session is not None:
+            try:
+                self.on_exported(self.session)
+            except Exception as exc:
+                self.error = f"Export files were written, but session completion could not be saved: {exc}"
         self._refresh_ui()
         return result
 
@@ -150,16 +159,19 @@ class ExportPage:
                     tag="export_back",
                     callback=self._on_back,
                 )
-            with dpg.file_dialog(
-                tag="export_destination_dialog",
-                show=False,
-                modal=True,
-                width=760,
-                height=480,
-                directory_selector=False,
-                default_filename="calibrated-process.json",
-                callback=self._on_destination_selected,
-            ):
+            dialog_options = {
+                "tag": "export_destination_dialog",
+                "show": False,
+                "modal": True,
+                "width": 760,
+                "height": 480,
+                "directory_selector": False,
+                "default_filename": "calibrated-process.json",
+                "callback": self._on_destination_selected,
+            }
+            if self.default_export_root is not None:
+                dialog_options["default_path"] = str(self.default_export_root)
+            with dpg.file_dialog(**dialog_options):
                 dpg.add_file_extension(".json", custom_text="[Orca process preset]")
             dpg.add_text("", tag="export_error", wrap=850, color=(235, 130, 125, 255))
             dpg.add_text("", tag="export_written", wrap=850, color=(92, 191, 178, 255))
@@ -243,6 +255,10 @@ class ExportPage:
 
     def _on_browse(self, sender: Any, app_data: Any, user_data: Any = None) -> None:
         del sender, app_data, user_data
+        if self.default_export_root is not None:
+            self.dpg.configure_item(
+                "export_destination_dialog", default_path=str(self.default_export_root)
+            )
         self.dpg.show_item("export_destination_dialog")
 
     def _on_destination_selected(self, sender: Any, app_data: Any, user_data: Any = None) -> None:

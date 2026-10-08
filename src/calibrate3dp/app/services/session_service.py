@@ -67,6 +67,29 @@ class SessionService:
     def list_recent(self, limit: int = 20) -> tuple[SessionSummary, ...]:
         return self.repository.list_recent(limit=limit)
 
+    def archive(self, session_id: str) -> SessionSnapshot:
+        """Hide a session from recent lists while retaining every saved artifact."""
+        snapshot = self.resume(session_id)
+        if snapshot.archived:
+            return snapshot
+        archived = SessionSnapshot(
+            session_id=snapshot.session_id,
+            created_at_utc=snapshot.created_at_utc,
+            updated_at_utc=snapshot.updated_at_utc,
+            module_id=snapshot.module_id,
+            current_step=snapshot.current_step,
+            profile_selection=snapshot.profile_selection,
+            plan=snapshot.plan,
+            results=snapshot.results,
+            run_ids=snapshot.run_ids,
+            artifact_paths=snapshot.artifact_paths,
+            saved_state_version=snapshot.saved_state_version,
+            status=snapshot.status,
+            archived=True,
+        )
+        self.save(archived)
+        return self.resume(session_id)
+
     @staticmethod
     def _fingerprint_selection(selection: ProfileSelection) -> ProfileSelection:
         profiles: Mapping[str, ResolvedProfile] = {

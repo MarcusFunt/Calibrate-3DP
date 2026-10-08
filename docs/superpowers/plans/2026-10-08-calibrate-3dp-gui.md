@@ -294,14 +294,16 @@ The concrete types may add fields needed by the implementation, but they must re
 - Sessions can be opened and resumed; archival hides a session from Home but never deletes its files.
 - Settings contain only application-level choices in v1: workspace root, default export root, diagnostics inclusion choices, and Orca executable/config-root overrides.
 
-- [ ] Write tests test_home_status_matches_persisted_session, test_resume_opens_saved_step, test_archive_preserves_artifacts, and test_settings_survive_restart.
-- [ ] Run the Home/session UI test file and verify it fails before implementation.
-- [ ] Implement recent sessions, resume, archive, settings, and clean recovery for a missing/moved artifact.
-- [ ] Add keyboard traversal, visible focus, accessible names, scaling checks at 100/150/200 percent, and Windows/Linux file-dialog checks.
-- [ ] Run PYTHONPATH=src python -m unittest discover -s tests -v and confirm the headless suite also passes without the gui extra installed.
+- [x] Write tests for persisted Home status, saved-step resume, non-destructive archive, and settings surviving restart.
+- [x] Run the Home/session UI test file and verify it fails before implementation.
+- [x] Implement recent sessions, resume, archive, settings, and recovery messaging for a missing workspace or moved artifact.
+- [x] Add Ctrl+1–4 page navigation, a visible keyboard focus highlight, and explicit control labels.
+- [ ] Verify keyboard traversal with assistive tools, scaling at 100/150/200 percent, and native file dialogs on Windows and Linux.
+- [x] Run `PYTHONPATH=src python -m unittest discover -s tests -v` (headless suite).
+- [ ] Confirm the suite passes in an environment without the GUI extra installed.
 - [ ] Run the acceptance workflow with an actual supported Orca version: import three profiles, generate and validate a 3x3 ironing run, resume after closing, record results, complete refinement and confirmation, and export a new process profile.
-- [ ] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
-- [ ] Commit as feat: complete calibration workbench GUI.
+- [x] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
+- [x] Commit as feat: complete calibration workbench GUI.
 
 ## Acceptance Gate
 

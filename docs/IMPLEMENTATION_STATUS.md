@@ -1,6 +1,6 @@
 # Implementation status
 
-## Current slice: headless profile-aware ironing generation
+## Current slice: saved desktop calibration workflow
 
 - [x] Add a source-layout Python package with no runtime dependencies.
 - [x] Resolve parent profile settings and retain per-setting source provenance.
@@ -16,8 +16,18 @@
 - [x] Save effective profile snapshots, candidate G-code hashes, logs, and the exact invocation in a versioned run manifest.
 - [x] Exercise inherited profile loading, explicit ironing activation, and candidate-specific G-code on Marcus's Windows Orca installation with the stock Creality Ender-3 V2 profiles.
 - [x] Add an opt-in local integration test for installed OrcaSlicer binaries.
+- [x] Add the Dear PyGui desktop shell with Home, New Calibration, Sessions, and Settings navigation.
+- [x] Connect reviewed plans to persistent sessions, recent-session status, resume, and non-destructive archive.
+- [x] Persist application settings for the workspace, default export folder, diagnostics inclusion, and Orca overrides.
+- [x] Add saved-step recovery messaging for missing workspaces or moved session artifacts.
+- [x] Add keyboard navigation shortcuts and a visible keyboard focus highlight.
+- [x] Add reviewed result entry, recommendation, confirmation, and profile-export screens.
+- [x] Pass the headless suite (126 tests; one opt-in Orca integration test skipped).
 - [ ] Verify Orca UI/effective-config equivalence and establish a supported-version matrix.
 - [ ] Test generated-3MF per-object overrides. The current implementation uses separate candidate plates as the fallback path.
+- [ ] Connect the supported Orca generation service to the desktop launcher; generation stays disabled until this is done.
+- [ ] Verify keyboard navigation, screen scaling at 100/150/200 percent, and native file dialogs on Windows and Linux.
+- [ ] Run the full import-to-export acceptance workflow with an installed supported Orca version.
 
 ## Verified integration and current limits
 
@@ -25,4 +35,4 @@ The Windows spike is recorded in [orca-cli-spike-windows-2026-10-08.md](orca-cli
 
 The Orca help banner reported `OrcaSlicer-01.10.01.50:`, while generated G-code identified itself as `OrcaSlicer 2.3.0`. That version identity mismatch has not been explained, so this is evidence for the tested installation only, not a support matrix. An earlier Bambu A1 profile probe failed Orca's layer-G-code validation after both direct and flattened profile loading; Bambu support is not claimed. The CLI build also rejected `--logfile`; the wrapper captures stdout and stderr directly.
 
-Per-object 3MF overrides and comparison against the Orca UI remain unverified. Separate candidate plates are implemented and tested as the current path. The Dear PyGui shell provides Home, New Calibration, Sessions, and Settings navigation. New Calibration detects local Orca setup, supports read-only JSON and profile-bundle import, and displays scoped printer, filament, and process profiles with inherited values, source hashes, and per-setting provenance. The profile step blocks on unresolved inheritance or missing ironing baseline values. Ironing Finish offers a baseline-relative 3 × 3 grid, editable values, fixed-setting review, and a separate-plate candidate map; Bridge and Support remain disabled. Generation now has a typed service boundary, candidate preview, background event queue, stdout/stderr panels, cancellation, and a validation gate before Results. The desktop shell does not yet register a concrete generation service or create a saved session, so Start remains disabled until both are injected. Session persistence is implemented in the service and SQLite layers but is not yet connected to the screens. Results entry and export review remain in progress. There is no printer-control integration or automated print start. The experiment assessment remains manual.
+Per-object 3MF overrides and comparison against the Orca UI remain unverified. Separate candidate plates are implemented and tested as the current path. New Calibration detects local Orca setup, supports read-only JSON and profile-bundle import, and displays scoped printer, filament, and process profiles with inherited values, source hashes, and per-setting provenance. The profile step blocks on unresolved inheritance or missing ironing baseline values. Ironing Finish offers a baseline-relative 3 × 3 grid, editable values, fixed-setting review, and a separate-plate candidate map; Bridge and Support remain disabled. Home and Sessions now read the SQLite session index, show persisted workflow statuses, resume the last saved step, and archive without deleting session files. Accepting a reviewed plan creates a durable session. Settings are stored as local JSON, including workspace/export paths, diagnostics privacy options, and Orca path overrides. Results, recommendation, confirmation, and export pages are implemented and persist their state. The generation view has a typed service boundary, candidate preview, background event queue, stdout/stderr panels, cancellation, and a validation gate; however, the desktop launcher still does not register a concrete generation service, so Start remains disabled in the standard launch. No printer-control integration or automated print start is available. Candidate assessment remains manual. Cross-platform accessibility, the supported Orca matrix, and the end-to-end acceptance workflow remain open.
