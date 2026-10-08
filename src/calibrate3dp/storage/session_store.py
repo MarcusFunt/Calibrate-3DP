@@ -7,8 +7,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import secrets
+import shutil
 import sqlite3
 from typing import Any
+from uuid import uuid4
 
 from calibrate3dp.app.models import (
     PROFILE_ROLES,
@@ -56,6 +58,8 @@ class SessionRepository:
     ``root`` contains ``sessions.sqlite3`` and one directory per session. Paths
     in ``SessionSnapshot.artifact_paths`` are interpreted relative to that
     per-session directory and are checked against traversal and symlink escapes.
+    Assessment photos are copied under ``evidence/photos`` and stored as the
+    same kind of checked session-relative path.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -166,6 +170,36 @@ class SessionRepository:
             raise
         finally:
             connection.close()
+
+    def copy_photo_to_session(self, session_id: str, source_path: str | Path) -> str:
+        """Copy a user-selected photo into a session and return its relative path."""
+        session_root = self._session_root(session_id).resolve()
+        source = Path(source_path).expanduser()
+        if not source.is_file():
+            raise FileNotFoundError(f"photo file does not exist: {source}")
+        connection = self._connect()
+        try:
+            exists = connection.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if exists is None:
+            raise SessionNotFoundError(f"session {session_id!r} was not found")
+
+        relative_path = PurePosixPath("evidence") / "photos" / f"{uuid4().hex}{source.suffix}"
+        destination = self._resolve_relative_path(session_root, relative_path.as_posix())
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Resolve again after creating parent directories so a pre-existing
+        # symlink inside the session cannot redirect the photo outside it.
+        destination = self._resolve_relative_path(session_root, relative_path.as_posix())
+        try:
+            with source.open("rb") as source_file, destination.open("xb") as destination_file:
+                shutil.copyfileobj(source_file, destination_file)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return relative_path.as_posix()
 
     def load(self, session_id: str) -> SessionSnapshot:
         """Restore a complete session, including its separate profile snapshot."""
@@ -295,6 +329,9 @@ class SessionRepository:
             if snapshot.plan is None:
                 raise SessionStateError("results cannot be saved before an experiment plan")
             snapshot.results.validate_for(snapshot.plan)
+            for assessment in snapshot.results.assessments:
+                for photo_path in assessment.photo_paths:
+                    self._resolve_relative_path(session_root, photo_path)
 
     def _session_root(self, session_id: str) -> Path:
         if not isinstance(session_id, str) or not session_id.strip():

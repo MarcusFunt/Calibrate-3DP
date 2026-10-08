@@ -215,6 +215,7 @@ The concrete types may add fields needed by the implementation, but they must re
 **Files:**
 - Modify: src/calibrate3dp/experiments.py
 - Modify: src/calibrate3dp/storage/session_store.py
+- Modify: src/calibrate3dp/app/window.py
 - Create: src/calibrate3dp/app/pages/results_page.py
 - Create: src/calibrate3dp/app/widgets/assessment_editor.py
 - Create: tests/test_result_contract.py
@@ -224,17 +225,18 @@ The concrete types may add fields needed by the implementation, but they must re
 - CandidateAssessment retains candidate_id, ratings, defect_tags, and notes; add an optional verdict with values pass, fail, uncertain, or missing, plus zero or more session-relative photo paths.
 - ExperimentResults retains selected_candidate_id and accepted; add tied_candidate_ids while retaining the existing single selected candidate for adaptive refinement.
 - New results serialize as schema version 2. from_dict continues to read existing version 1 payloads with verdict=None, no photographs, and no tied candidates.
+- A version 1 record previously marked accepted is reopened as unconfirmed because it has no explicit verdict evidence for the new acceptance gate.
 - Missing means the physical specimen was unavailable; uncertain means it was present but could not be judged. Neither is converted to a score.
 - Photos are copied into the session evidence directory before their relative paths are saved.
 
-- [ ] Write tests test_version_1_results_still_load, test_version_2_round_trip_preserves_verdict_tie_and_photos, test_missing_specimen_cannot_have_numeric_ratings, test_tie_candidates_must_belong_to_plan, and test_photo_paths_cannot_escape_session_root.
-- [ ] Run the result-contract test file and verify it fails before implementation.
-- [ ] Extend CandidateAssessment and ExperimentResults validation/serialization compatibly; update existing tests for version 2 writes and version 1 reads.
-- [ ] Implement per-candidate editors for 1–5 ratings, pass/fail/uncertain/missing, defect tags, note, and local photograph attachments.
-- [ ] Persist each edit with a 300 ms debounce for text entry and immediately after rating, verdict, or attachment changes; show Saved, Saving, or Save Failed with retry.
-- [ ] Implement explicit winner and tie selection; incomplete or uncertain assessments remain visible and cannot silently pass the acceptance gate.
-- [ ] Run result-contract, results UI, session-store, and full existing unit tests.
-- [ ] Commit as feat: add resumable print result entry.
+- [x] Write tests test_version_1_results_still_load, test_version_2_round_trip_preserves_verdict_tie_and_photos, test_missing_specimen_cannot_have_numeric_ratings, test_tie_candidates_must_belong_to_plan, and test_photo_paths_cannot_escape_session_root.
+- [x] Run the result-contract test file and verify it fails before implementation.
+- [x] Extend CandidateAssessment and ExperimentResults validation/serialization compatibly; update existing tests for version 2 writes and version 1 reads.
+- [x] Implement per-candidate editors for 1–5 ratings, pass/fail/uncertain/missing, defect tags, note, and local photograph attachments.
+- [x] Persist each edit with a 300 ms debounce for text entry and immediately after rating, verdict, or attachment changes; show Saved, Saving, or Save Failed with retry.
+- [x] Implement explicit winner and tie selection; incomplete or uncertain assessments remain visible and cannot silently pass the acceptance gate.
+- [x] Run result-contract, results UI, session-store, and full existing unit tests.
+- [x] Commit as feat: add resumable print result entry.
 
 ## Task 7: Add Explainable Refinement and Final Confirmation
 

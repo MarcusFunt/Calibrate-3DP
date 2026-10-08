@@ -10,6 +10,7 @@ from calibrate3dp.experiments import ExperimentPlan
 from calibrate3dp.app.pages.profile_selection_page import ProfileSelectionPage
 from calibrate3dp.app.pages.experiment_review_page import ExperimentReviewPage
 from calibrate3dp.app.pages.generation_page import GenerationPage
+from calibrate3dp.app.pages.results_page import ResultsPage
 from calibrate3dp.app.pages.module_page import ModulePage
 from calibrate3dp.app.pages.setup_page import SetupPage
 from calibrate3dp.app.services.experiment_service import ExperimentService
@@ -79,6 +80,7 @@ class AppShell:
         self._module_page: ModulePage | None = None
         self._experiment_review_page: ExperimentReviewPage | None = None
         self._generation_page: GenerationPage | None = None
+        self._results_page: ResultsPage | None = None
         self.routes = RouteState()
         self._dpg = dpg_module
         self._context_created = False
@@ -137,6 +139,8 @@ class AppShell:
         finally:
             if self._generation_page is not None:
                 self._generation_page.close()
+            if self._results_page is not None:
+                self._results_page.flush_pending()
             if self._context_created:
                 dpg.destroy_context()
                 self._context_created = False
@@ -446,8 +450,15 @@ class AppShell:
                 dpg,
                 generation_service=self.services.get("generation_service"),
                 on_recovery=self._on_generation_recovery,
+                on_results=self._on_results_ready,
             )
             self._generation_page.render()
+            self._results_page = ResultsPage(
+                dpg,
+                self.services.get("session_service"),
+                on_back=self._on_results_back,
+            )
+            self._results_page.render()
 
             dpg.add_spacer(height=18)
             dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
@@ -479,6 +490,8 @@ class AppShell:
         """Drain worker events and reveal generation after the plan is accepted."""
         page = self._generation_page
         if page is None:
+            if self._results_page is not None:
+                self._results_page.tick()
             return
         if (
             self.experiment_plan is not None
@@ -494,6 +507,23 @@ class AppShell:
                 self._dpg.configure_item("experiment_review_panel", show=False)
                 self._dpg.configure_item("generation_panel", show=True)
         page.poll_events()
+        if self._results_page is not None:
+            self._results_page.tick()
+
+    def _on_results_ready(self) -> None:
+        """Open results only with the reviewed plan and generation session."""
+        if self._results_page is None or self.experiment_plan is None:
+            return
+        session = self._generation_page.session if self._generation_page is not None else None
+        self._results_page.set_context(session=session, plan=self.experiment_plan)
+        if self._dpg is not None:
+            self._dpg.configure_item("generation_panel", show=False)
+            self._dpg.configure_item("results_panel", show=True)
+
+    def _on_results_back(self) -> None:
+        if self._dpg is not None:
+            self._dpg.configure_item("results_panel", show=False)
+            self._dpg.configure_item("generation_panel", show=True)
 
     def _on_generation_recovery(self) -> None:
         """Return to the setup view so executable/profile configuration can be checked."""
