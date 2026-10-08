@@ -111,12 +111,12 @@ The concrete types may add fields needed by the implementation, but they must re
 - AppShell starts on Home, creates one primary viewport and root page layout, exposes the four top-level destinations, and receives service instances through its constructor. Keep route state independently testable without creating a viewport.
 - Importing calibrate3dp or calibrate3dp.profiles must not import dearpygui.
 
-- [ ] Add optional dependency extra `gui` with Dear PyGui >=2.3,<3 and console entry point calibrate3dp = calibrate3dp.app.__main__:main.
-- [ ] Write tests test_app_shell_starts_on_home, test_navigation_switches_pages, and test_core_import_does_not_load_dearpygui.
-- [ ] Run route and callback tests without creating a native viewport; verify they pass and the core-import test passes in an environment without the gui extra installed.
-- [ ] Implement Dear PyGui context and viewport setup, AppShell, page builders, navigation callbacks, manual callback queue dispatch from the render loop, context cleanup, and clear startup errors when the gui extra is missing.
-- [ ] Run the GUI test file and full existing unittest suite.
-- [ ] Commit as feat: add optional desktop application shell.
+- [x] Add optional dependency extra `gui` with Dear PyGui >=2.3,<3 and console entry point calibrate3dp = calibrate3dp.app.__main__:main.
+- [x] Write tests test_app_shell_starts_on_home, test_navigation_switches_pages, and test_core_import_does_not_load_dearpygui.
+- [x] Run route and callback tests without creating a native viewport; verify they pass and the core-import test passes in an environment without the gui extra installed.
+- [x] Implement Dear PyGui context and viewport setup, AppShell, page builders, navigation callbacks, manual callback queue dispatch from the render loop, context cleanup, and clear startup errors when the gui extra is missing.
+- [x] Run the GUI test file and full existing unittest suite.
+- [x] Commit as feat: add optional desktop application shell.
 
 ## Task 2: Add Session Persistence and Resume
 
