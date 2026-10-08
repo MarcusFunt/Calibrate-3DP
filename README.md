@@ -2,9 +2,9 @@
 
 Local-first, semi-automatic calibration workbench for FDM printers using OrcaSlicer as the slicing engine. The application will keep experiment generation, manual result entry, adaptive iteration, and profile export under its own control.
 
-The current implementation is the non-graphical calibration core. It loads Orca-style JSON presets, resolves inherited values with per-setting provenance, and creates source-preserving candidate profiles with explicit settings patches. It also builds deterministic experiment grids, records manual candidate assessments, and proposes narrower ironing flow/speed tests when the user rejects the current result. Plans and results have versioned JSON representations so a future interface can save and resume a calibration session.
+The current implementation is a headless calibration core. It imports Orca profile JSON and ZIP-based bundles without discarding unknown fields, resolves inheritance with per-setting provenance, and builds flattened candidate process profiles. It also creates deterministic experiment grids, records manual candidate assessments, and proposes narrower ironing flow/speed tests when a result is rejected. Plans and results have versioned JSON representations.
 
-The ironing planner consumes an explicit baseline and sweep values. It does not choose hidden slicer defaults. It produces candidate settings and plans, but it does not generate coupon geometry or G-code yet. Orca CLI integration, printer control, and all graphical UI work remain out of scope for this slice.
+The ironing runner consumes an explicit resolved machine, process, and filament baseline. It generates one flat top-surface coupon per candidate, invokes Orca headlessly with isolated data and output folders, and saves candidate profiles, G-code, logs, hashes, and a run manifest. If the selected profile disables ironing, callers must explicitly enable it in the process baseline patch and record that value in the plan; the runner does not turn it on silently. Separate candidate plates are the current slicing path; per-object 3MF overrides are still unverified. The Windows integration spike passed with the stock Creality Ender-3 V2 profile set. The CLI wrapper uses no GUI or printer-control integration.
 
 ## Headless ironing workflow
 
@@ -29,8 +29,9 @@ plan = create_initial_ironing_experiment(
     speed_values=(20, 30, 40),
 )
 
-# Save this payload with json.dump, or use each candidate's settings for
-# candidate-profile/G-code generation when the Orca adapter is implemented.
+# Save this payload with json.dump. With resolved Orca profiles and an
+# OrcaCli instance, slice_ironing_experiment generates one candidate job per
+# coupon and records the results in a run manifest.
 plan_payload = plan.to_dict()
 
 # After printing and judging candidate I005 manually:
@@ -58,3 +59,5 @@ next_plan = propose_ironing_refinement(
 ```sh
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+The real Orca integration test is skipped unless `ORCA_SLICER_EXE` and `ORCA_PROFILE_ROOT` point to an installed slicer and a profile tree. See `tests/test_orca_slicer_integration.py` and the Windows spike report for the tested profile names.

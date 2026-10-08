@@ -27,11 +27,16 @@ _SPEED = "ironing_speed"
 _IRONING_KEYS = (_FLOW, _SPEED)
 
 
-def _decimal(value: Any, name: str) -> Decimal:
+def _decimal(value: Any, name: str, *, allow_percent: bool = False) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise IroningCalibrationError(f"{name} must be a finite number")
     try:
-        parsed = Decimal(str(value).strip())
+        rendered = str(value).strip()
+        if rendered.endswith("%"):
+            if not allow_percent:
+                raise IroningCalibrationError(f"{name} must not use a percent unit")
+            rendered = rendered[:-1].strip()
+        parsed = Decimal(rendered)
     except (InvalidOperation, ValueError, AttributeError) as exc:
         raise IroningCalibrationError(f"{name} must be a finite number") from exc
     if not parsed.is_finite():
@@ -42,7 +47,10 @@ def _decimal(value: Any, name: str) -> Decimal:
 def _numeric_sweep(values: Sequence[Any], key: str) -> tuple[Decimal, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise IroningCalibrationError(f"{key} sweep values must be a sequence")
-    parsed = tuple(_decimal(value, f"{key} sweep value") for value in values)
+    parsed = tuple(
+        _decimal(value, f"{key} sweep value", allow_percent=key == _FLOW)
+        for value in values
+    )
     if len(parsed) < 3:
         raise IroningCalibrationError(f"{key} sweep requires at least three values")
     ordered = tuple(sorted(parsed))
@@ -58,13 +66,15 @@ def _numeric_sweep(values: Sequence[Any], key: str) -> tuple[Decimal, ...]:
     return ordered
 
 
-def _profile_number(value: Decimal, exemplar: Any) -> Any:
+def _profile_number(value: Decimal, exemplar: Any, key: str) -> Any:
     """Format generated values like the imported profile's numeric field."""
     if isinstance(exemplar, str):
+        percent_unit = key == _FLOW and exemplar.strip().endswith("%")
         rendered = format(value, "f")
         if "." in rendered:
             rendered = rendered.rstrip("0").rstrip(".")
-        return "0" if rendered in ("-0", "") else rendered
+        rendered = "0" if rendered in ("-0", "") else rendered
+        return f"{rendered}%" if percent_unit else rendered
     if isinstance(exemplar, bool) or not isinstance(exemplar, (int, float)):
         raise IroningCalibrationError("ironing baseline values must be numeric strings or numbers")
     if isinstance(exemplar, int) and value == value.to_integral_value():
@@ -76,7 +86,7 @@ def _baseline_value(settings: Mapping[str, Any], key: str) -> Any:
     if key not in settings:
         raise IroningCalibrationError(f"baseline settings are missing {key!r}")
     value = settings[key]
-    numeric = _decimal(value, f"baseline {key}")
+    numeric = _decimal(value, f"baseline {key}", allow_percent=key == _FLOW)
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise IroningCalibrationError(f"baseline {key} must be a numeric string or number")
     if key == _FLOW and numeric < 0:
@@ -103,8 +113,8 @@ def create_initial_ironing_experiment(
         flow = _numeric_sweep(flow_values, _FLOW)
         speed = _numeric_sweep(speed_values, _SPEED)
         dimensions = (
-            SweepDimension(_FLOW, tuple(_profile_number(v, flow_baseline) for v in flow), "Ironing flow"),
-            SweepDimension(_SPEED, tuple(_profile_number(v, speed_baseline) for v in speed), "Ironing speed"),
+            SweepDimension(_FLOW, tuple(_profile_number(v, flow_baseline, _FLOW) for v in flow), "Ironing flow"),
+            SweepDimension(_SPEED, tuple(_profile_number(v, speed_baseline, _SPEED) for v in speed), "Ironing speed"),
         )
         return create_grid_experiment(
             plan_id=plan_id,
@@ -137,7 +147,10 @@ def _validate_limits(
     for key, bounds in limits.items():
         if isinstance(bounds, (str, bytes)) or not isinstance(bounds, Sequence) or len(bounds) != 2:
             raise IroningCalibrationError(f"limits for {key!r} must be a (minimum, maximum) pair")
-        lower, upper = (_decimal(value, f"{key} limit") for value in bounds)
+        lower, upper = (
+            _decimal(value, f"{key} limit", allow_percent=key == _FLOW)
+            for value in bounds
+        )
         if lower > upper:
             raise IroningCalibrationError(f"minimum {key} limit must not exceed its maximum")
         parsed[key] = (lower, upper)
@@ -152,7 +165,11 @@ def _refined_values(
     limits: tuple[Decimal, Decimal] | None,
 ) -> tuple[tuple[Any, ...], str]:
     points = _numeric_sweep(current_values, key)
-    winner_value = _decimal(winner, f"selected candidate {key}")
+    winner_value = _decimal(
+        winner,
+        f"selected candidate {key}",
+        allow_percent=key == _FLOW,
+    )
     if winner_value not in points:
         raise IroningCalibrationError(f"selected candidate value for {key!r} is outside its sweep")
     index = points.index(winner_value)
@@ -180,7 +197,7 @@ def _refined_values(
                 f"{mode} for {key} would propose {value}, outside configured limits "
                 f"[{limits[0]}, {limits[1]}]"
             )
-    return tuple(_profile_number(value, exemplar) for value in refined), mode
+    return tuple(_profile_number(value, exemplar, key) for value in refined), mode
 
 
 def propose_ironing_refinement(
