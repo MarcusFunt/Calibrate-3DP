@@ -31,6 +31,7 @@ class RecommendationPage:
         *,
         on_refinement_ready: Callable[[SessionSnapshot, ExperimentPlan], None] | None = None,
         on_confirmation_requested: Callable[[SessionSnapshot, ExperimentPlan, str], None] | None = None,
+        on_accepted: Callable[[SessionSnapshot], None] | None = None,
     ) -> None:
         self.dpg = dpg
         self.acceptance_service = acceptance_service
@@ -38,6 +39,7 @@ class RecommendationPage:
         self.session_service = session_service
         self.on_refinement_ready = on_refinement_ready
         self.on_confirmation_requested = on_confirmation_requested
+        self.on_accepted = on_accepted
         self.session: SessionSnapshot | None = None
         self.plan: ExperimentPlan | None = None
         self.results: ExperimentResults | None = None
@@ -357,6 +359,8 @@ class RecommendationPage:
         self.results = accepted
         self._evaluate()
         self._refresh_ui()
+        if self.on_accepted is not None:
+            self.on_accepted(updated)
         return True
 
     def mark_inconclusive(self, reason: str = "") -> bool:

@@ -12,12 +12,15 @@ from calibrate3dp.app.pages.experiment_review_page import ExperimentReviewPage
 from calibrate3dp.app.pages.generation_page import GenerationPage
 from calibrate3dp.app.pages.results_page import ResultsPage
 from calibrate3dp.app.pages.recommendation_page import RecommendationPage
+from calibrate3dp.app.pages.export_page import ExportPage
 from calibrate3dp.app.pages.module_page import ModulePage
 from calibrate3dp.app.pages.setup_page import SetupPage
 from calibrate3dp.app.services.acceptance_service import AcceptanceService
 from calibrate3dp.app.services.experiment_service import ExperimentService
+from calibrate3dp.app.services.export_service import ExportService
 from calibrate3dp.app.services.generation_port import GenerationState, ValidationState
 from calibrate3dp.app.services.profile_service import ProfileService
+from calibrate3dp.storage.session_store import SessionRepository
 
 
 PAGE_LABELS: Mapping[str, str] = {
@@ -85,6 +88,7 @@ class AppShell:
         self._generation_page: GenerationPage | None = None
         self._results_page: ResultsPage | None = None
         self._recommendation_page: RecommendationPage | None = None
+        self._export_page: ExportPage | None = None
         self._confirmation_plan: ExperimentPlan | None = None
         self._confirmation_run_id: str | None = None
         self._last_synchronized_plan: ExperimentPlan | None = None
@@ -419,10 +423,10 @@ class AppShell:
 
             with dpg.group(horizontal=True):
                 for index, label in enumerate(
-                    ("PROFILES", "MODULE", "REVIEW", "GENERATE", "RESULTS"), start=1
+                    ("PROFILES", "MODULE", "REVIEW", "GENERATE", "RESULTS", "RECOMMEND", "EXPORT"), start=1
                 ):
                     dpg.add_text(f"{index:02d}  {label}", color=(133, 149, 166, 255))
-                    if index < 5:
+                    if index < 7:
                         dpg.add_spacer(width=18)
 
             dpg.add_spacer(height=20)
@@ -468,15 +472,33 @@ class AppShell:
                 on_recommendation=self._on_recommendation_ready,
             )
             self._results_page.render()
+            session_service = self.services.get("session_service")
+            acceptance_service = AcceptanceService(self.experiment_service)
             self._recommendation_page = RecommendationPage(
                 dpg,
-                AcceptanceService(self.experiment_service),
+                acceptance_service,
                 self.experiment_service,
-                self.services.get("session_service"),
+                session_service,
                 on_refinement_ready=self._on_refinement_ready,
                 on_confirmation_requested=self._on_confirmation_requested,
+                on_accepted=self._on_export_ready,
             )
             self._recommendation_page.render()
+            repository = getattr(session_service, "repository", None)
+            if isinstance(repository, SessionRepository):
+                setup_state = getattr(self.profile_service, "setup_state", None)
+                config_roots = getattr(setup_state, "config_roots", ())
+                self._export_page = ExportPage(
+                    dpg,
+                    ExportService(
+                        repository,
+                        acceptance_service=acceptance_service,
+                        protected_roots=config_roots,
+                        orca_version=getattr(setup_state, "version_banner", None),
+                    ),
+                    on_back=self._on_export_back,
+                )
+                self._export_page.render()
 
             dpg.add_spacer(height=18)
             dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
@@ -638,6 +660,19 @@ class AppShell:
         if self._dpg is not None:
             self._dpg.configure_item("generation_back", show=False)
             self._dpg.configure_item("generation_panel", show=False)
+            self._dpg.configure_item("recommendation_panel", show=True)
+
+    def _on_export_ready(self, session: Any) -> None:
+        if self._export_page is None:
+            return
+        self._export_page.set_session(session)
+        if self._dpg is not None:
+            self._dpg.configure_item("recommendation_panel", show=False)
+            self._dpg.configure_item("export_panel", show=True)
+
+    def _on_export_back(self) -> None:
+        if self._dpg is not None:
+            self._dpg.configure_item("export_panel", show=False)
             self._dpg.configure_item("recommendation_panel", show=True)
 
     def _on_generation_recovery(self) -> None:

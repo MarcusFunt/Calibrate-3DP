@@ -258,7 +258,6 @@ The concrete types may add fields needed by the implementation, but they must re
 - [x] Implement confirmation-run state and ensure failed/canceled confirmation jobs do not unlock profile export.
 - [x] Run recommendation, ironing, results, and session-resume tests.
 - [x] Commit as feat: add explainable calibration refinement.
-- [ ] Commit as feat: add explainable calibration refinement.
 
 ## Task 8: Add Reviewed Profile Export
 
@@ -272,13 +271,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - ExportDraft contains source profile name/hash, new profile name, changed setting keys, old/new values, supporting run and candidate IDs, compatibility warnings, and report paths.
 - ExportResult contains the new profile path, machine-readable session manifest, human-readable Markdown report, and hashes. Writing the draft must not mutate the source profile or Orca config directory.
 
-- [ ] Write tests test_diff_contains_only_accepted_ironing_keys, test_original_profile_bytes_remain_unchanged, test_export_requires_accepted_confirmation_result, test_destination_is_user_selected, and test_manifest_and_report_include_evidence_scope.
-- [ ] Run the export UI test file and verify it fails before implementation.
-- [ ] Implement a review page with source and destination names, exact old/new values, source hash, evidence link, known trade-offs, confirmation status, and a browsable destination.
-- [ ] Implement JSON preset and Markdown report export; enable import-bundle export only for an adapter version already verified by the Orca integration tests.
-- [ ] Implement exact import instructions for the detected Orca version; do not auto-import or activate the exported preset.
-- [ ] Run export UI, profile export, and full unit tests.
-- [ ] Commit as feat: add reviewed profile export workflow.
+- [x] Write tests test_diff_contains_only_accepted_ironing_keys, test_original_profile_bytes_remain_unchanged, test_export_requires_accepted_confirmation_result, test_destination_is_user_selected, and test_manifest_and_report_include_evidence_scope.
+- [x] Run the export UI test file and verify it fails before implementation.
+- [x] Implement a review page with source and destination names, exact old/new values, source hash, evidence link, known trade-offs, confirmation status, and a browsable destination.
+- [x] Implement JSON preset and Markdown report export; keep import-bundle export disabled until an adapter version passes the Orca integration tests.
+- [x] Implement import instructions for the detected Orca version; do not auto-import or activate the exported preset.
+- [x] Run export UI, profile export, and full unit tests.
+- [x] Commit as feat: add reviewed profile export workflow.
 
 ## Task 9: Complete Home, Session Management, Accessibility, and Acceptance
 
