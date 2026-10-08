@@ -179,14 +179,14 @@ The concrete types may add fields needed by the implementation, but they must re
 - Clamp only to explicit limits supplied by the active Orca schema adapter. If a clamp creates duplicate values, if a required setting is absent, or if numeric precision cannot represent three distinct values, block generation and ask the user to edit bounds.
 - The review view shows the full parameter matrix, fixed settings, candidate IDs, the exact generated plate map, assumptions, estimates if verified, and all warnings before Generate is enabled.
 
-- [ ] Write tests test_ironing_defaults_use_imported_profile_and_match_documented_matrix, test_missing_baseline_blocks_plan, test_duplicate_after_schema_clamp_requires_edit, test_fixed_settings_are_visible, and test_unavailable_module_cannot_start.
-- [ ] Run the experiment review test file and verify it fails before implementation.
-- [ ] Implement deterministic baseline-relative sweep options and call the existing ironing planner; keep the 3x3 matrix editable before creating the final plan.
-- [ ] Implement module cards for Ironing Finish, Bridge Quality, and Support Interface/Removal; disable cards until their experiment planners and geometry adapters are available.
-- [ ] Implement the table model and review page; allow bound/step edits and parameter locking only where the module declares the parameter.
-- [ ] Show a clear explanation of how each proposed range was calculated and what values are held fixed.
-- [ ] Run UI review tests and existing ironing/experiment tests.
-- [ ] Commit as feat: add calibration setup and experiment review.
+- [x] Write tests test_ironing_defaults_use_imported_profile_and_match_documented_matrix, test_missing_baseline_blocks_plan, test_duplicate_after_schema_clamp_requires_edit, test_fixed_settings_are_visible, and test_unavailable_module_cannot_start.
+- [x] Run the experiment review test file and verify it fails before implementation.
+- [x] Implement deterministic baseline-relative sweep options and call the existing ironing planner; keep the 3x3 matrix editable before creating the final plan.
+- [x] Implement module cards for Ironing Finish, Bridge Quality, and Support Interface/Removal; disable cards until their experiment planners and geometry adapters are available.
+- [x] Implement the table model and review page; allow bound/step edits and parameter locking only where the module declares the parameter.
+- [x] Show a clear explanation of how each proposed range was calculated and what values are held fixed.
+- [x] Run UI review tests and existing ironing/experiment tests.
+- [x] Commit as feat: add calibration setup and experiment review.
 
 ## Task 5: Connect Preview, Slicing Progress, Cancellation, and Validation
 

@@ -6,8 +6,12 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Mapping
 
+from calibrate3dp.experiments import ExperimentPlan
 from calibrate3dp.app.pages.profile_selection_page import ProfileSelectionPage
+from calibrate3dp.app.pages.experiment_review_page import ExperimentReviewPage
+from calibrate3dp.app.pages.module_page import ModulePage
 from calibrate3dp.app.pages.setup_page import SetupPage
+from calibrate3dp.app.services.experiment_service import ExperimentService
 from calibrate3dp.app.services.profile_service import ProfileService
 
 
@@ -67,8 +71,12 @@ class AppShell:
     ) -> None:
         self.services = dict(services or {})
         self.profile_service = self.services.get("profile_service") or ProfileService()
+        self.experiment_service = self.services.get("experiment_service") or ExperimentService()
         self.profile_selection: Any | None = None
+        self.experiment_plan: ExperimentPlan | None = None
         self._profile_selection_page: ProfileSelectionPage | None = None
+        self._module_page: ModulePage | None = None
+        self._experiment_review_page: ExperimentReviewPage | None = None
         self.routes = RouteState()
         self._dpg = dpg_module
         self._context_created = False
@@ -416,6 +424,19 @@ class AppShell:
             setup_page.on_profiles_changed = self._profile_selection_page.refresh
             self._profile_selection_page.render()
 
+            self._module_page = ModulePage(
+                self.experiment_service,
+                dpg,
+                on_plan_created=self._on_experiment_plan_created,
+            )
+            self._module_page.render()
+            self._experiment_review_page = ExperimentReviewPage(
+                self.experiment_service,
+                dpg,
+                on_plan_ready=self._on_experiment_plan_ready,
+            )
+            self._experiment_review_page.render()
+
             dpg.add_spacer(height=18)
             dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
             dpg.add_spacer(height=8)
@@ -426,12 +447,21 @@ class AppShell:
     def _on_profile_selection(self, selection: Any) -> None:
         """Retain the validated, provenance-bearing baseline for the next step."""
         self.profile_selection = selection
-        if self._dpg is not None and self._dpg.does_item_exist("profile_selection_message"):
-            self._dpg.set_value(
-                "profile_selection_message",
-                "Profiles are ready for an Ironing Finish session. Module planning and session "
-                "creation are the next workflow step.",
-            )
+        if self._dpg is not None and self._dpg.does_item_exist("module_selection_panel"):
+            self._dpg.configure_item("profile_selection_panel", show=False)
+            self._dpg.configure_item("module_selection_panel", show=True)
+            if self._module_page is not None:
+                self._module_page.set_profiles(selection)
+
+    def _on_experiment_plan_created(self, plan: ExperimentPlan, selection: Any) -> None:
+        if self._dpg is None or self._experiment_review_page is None:
+            return
+        self._experiment_review_page.set_plan(plan, selection)
+        self._dpg.configure_item("module_selection_panel", show=False)
+        self._dpg.configure_item("experiment_review_panel", show=True)
+
+    def _on_experiment_plan_ready(self, plan: ExperimentPlan) -> None:
+        self.experiment_plan = plan
 
     def _add_planned_module_card(self, name: str) -> None:
         with self._dpg.child_window(width=278, height=90, border=True):
