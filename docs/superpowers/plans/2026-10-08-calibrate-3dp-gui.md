@@ -4,26 +4,26 @@
 
 **Goal:** Deliver a native desktop workflow that imports the user's OrcaSlicer profiles, guides a complete calibration session, saves progress, records print results, proposes the next experiment, and exports a reviewed profile without changing the source presets.
 
-**Architecture:** Keep the existing profile and experiment core independent of Qt. Add a PySide6 Qt Widgets application that calls typed application services, with SQLite for the session index and ordinary files for session evidence and generated artifacts. Orca discovery, profile adapters, slicing, geometry, and G-code validation stay behind services; the GUI reports their actual state and never guesses that a job succeeded.
+**Architecture:** Keep the existing profile and experiment core independent of Dear PyGui. Add a Dear PyGui desktop application shell that calls typed application services, with SQLite for the session index and ordinary files for session evidence and generated artifacts. Orca discovery, profile adapters, slicing, geometry, and G-code validation stay behind services; the GUI reports their actual state and never guesses that a job succeeded. Enable manual callback management so application actions run from the render loop; worker tasks publish progress through a thread-safe queue for the UI loop to consume.
 
-**Tech Stack:** Existing Python package and unittest suite; Python >=3.11; optional PySide6 6.x GUI extra; SQLite from the standard library; Qt Widgets model/view for candidate tables; Orca CLI through the project's isolated, mockable job service.
+**Tech Stack:** Existing Python package and unittest suite; Python >=3.11; optional Dear PyGui 2.x GUI extra; SQLite from the standard library; Dear PyGui tables and themed widgets for candidate matrices; Orca CLI through the project's isolated, mockable job service.
 
 **Spec:** IMPLEMENTATION_PLAN.md, especially sections 1–2, 4–8, 12–17; README.md; docs/IMPLEMENTATION_STATUS.md. This plan implements the user-interface and session workflow, and preserves the original Orca integration gate.
 
 ## Global Constraints
 
-- Preserve the package's Python >=3.11 requirement and keep the headless core importable without installing PySide6.
-- Install the GUI through an optional gui dependency extra; use PySide6 >=6.8 and <7 for Python 3.11 support.
+- Preserve the package's Python >=3.11 requirement and keep the headless core importable without installing Dear PyGui.
+- Install the GUI through an optional `gui` dependency extra; use Dear PyGui >=2.3 and <3, and verify a compatible wheel for each supported OS/Python combination.
 - Do not start GUI implementation until the original plan's Phase 0 exit gate has a checked-in report and fixture proving profile resolution, candidate-specific slicing, machine start/end code preservation, and usable-bed bounds.
-- Use the existing ProfileDocument, ProfileCatalog, ResolvedProfile, ExperimentPlan, CandidateAssessment, ExperimentResults, ironing planner, and profile patch primitive; do not duplicate their domain logic in widgets.
+- Use the existing ProfileDocument, ProfileCatalog, ResolvedProfile, ExperimentPlan, CandidateAssessment, ExperimentResults, ironing planner, and profile patch primitive; do not duplicate their domain logic in Dear PyGui callbacks or widgets.
 - Never silently replace a missing or ambiguous profile setting with an Orca default. Show its provenance and block only the actions that require that value.
 - Never write to the source Orca preset directory or modify/activate a source profile. Export a new file only after the user reviews its diff and destination.
 - Never invoke Orca through a shell command string. The job service receives an executable and argument list and uses a disposable per-job data directory.
 - Keep all profiles, notes, photographs, generated files, and session state local. Diagnostic exports omit profile contents and photographs unless the user explicitly includes them.
 - The GUI does not start, upload, or control a printer. Printing happens through the user's normal Orca workflow.
 - Do not display invented progress percentages or estimates. When Orca cannot report a percentage, show an indeterminate progress state and the current phase.
-- Use Qt model/view for large candidate tables; do not put calibration calculations or profile-schema interpretation in view widgets.
-- Test widgets with QT_QPA_PLATFORM=offscreen and fake services. Reserve real Orca execution for the gated integration and manual acceptance runs.
+- Use Dear PyGui's table API for the candidate matrix; keep calibration calculations and profile-schema interpretation outside callbacks and view-building code.
+- Test navigation state, callback handlers, and service adapters with fake services without creating a native viewport. Reserve display-dependent Dear PyGui smoke checks and real Orca execution for gated integration and manual acceptance runs.
 
 ## Review Focus
 
@@ -93,11 +93,11 @@ Define these application-facing types in app/models.py before building the pages
 - ProfileService exposes discover() -> ProfileCatalog, import_json(path, scope) -> ProfileDocument, import_bundle(path) -> tuple[ProfileDocument, ...], and resolve(kind, scope, name) -> ResolvedProfile. Unsupported bundle versions return an explicit compatibility error.
 - ExportService exposes prepare(session, selected_candidate_id, new_profile_name) -> ExportDraft and write(draft, destination) -> ExportResult. prepare is read-only; write creates a new file and never installs it.
 
-The concrete types may add fields needed by the implementation, but they must retain these semantics and must not make Qt types part of the domain API.
+The concrete types may add fields needed by the implementation, but they must retain these semantics and must not make Dear PyGui types part of the domain API.
 
 ---
 
-## Task 1: Add the Optional Qt Application Shell
+## Task 1: Add the Optional Dear PyGui Application Shell
 
 **Files:**
 - Modify: pyproject.toml
@@ -108,13 +108,13 @@ The concrete types may add fields needed by the implementation, but they must re
 
 **Interfaces:**
 - Provides main(argv: Sequence[str] | None = None) -> int.
-- MainWindow starts on Home, exposes the four top-level destinations, and receives service instances through its constructor.
-- Importing calibrate3dp or calibrate3dp.profiles must not import PySide6.
+- AppShell starts on Home, creates one primary viewport and root page layout, exposes the four top-level destinations, and receives service instances through its constructor. Keep route state independently testable without creating a viewport.
+- Importing calibrate3dp or calibrate3dp.profiles must not import dearpygui.
 
-- [ ] Add optional dependency extra gui with PySide6 >=6.8,<7 and console entry point calibrate3dp = calibrate3dp.app.__main__:main.
-- [ ] Write tests test_main_window_starts_on_home, test_navigation_switches_pages, and test_core_import_does_not_load_qt.
-- [ ] Run tests with QT_QPA_PLATFORM=offscreen and verify the first two pass while the core-import test passes in an environment without PySide6.
-- [ ] Implement QApplication setup, MainWindow, page stack, navigation signals, and clear startup errors when the GUI extra is missing.
+- [ ] Add optional dependency extra `gui` with Dear PyGui >=2.3,<3 and console entry point calibrate3dp = calibrate3dp.app.__main__:main.
+- [ ] Write tests test_app_shell_starts_on_home, test_navigation_switches_pages, and test_core_import_does_not_load_dearpygui.
+- [ ] Run route and callback tests without creating a native viewport; verify they pass and the core-import test passes in an environment without the gui extra installed.
+- [ ] Implement Dear PyGui context and viewport setup, AppShell, page builders, navigation callbacks, manual callback queue dispatch from the render loop, context cleanup, and clear startup errors when the gui extra is missing.
 - [ ] Run the GUI test file and full existing unittest suite.
 - [ ] Commit as feat: add optional desktop application shell.
 
@@ -197,12 +197,12 @@ The concrete types may add fields needed by the implementation, but they must re
 - Create: tests/test_generation_ui.py
 
 **Interfaces:**
-- GenerationService is injected; this task implements the GUI adapter and state mapping, not another Orca CLI or geometry engine.
+- GenerationService is injected; this task implements the GUI adapter and state mapping, not another Orca CLI or geometry engine. No Orca worker may call Dear PyGui APIs; progress events are applied from the render loop.
 - The real service must be supplied by the original plan's Phase 0/Phase 1 Orca adapter before real generation is enabled.
 - The UI observes GenerationEvent values, shows logs as they arrive, and enables Results only after state=succeeded and validation state is valid.
 - A canceled or failed job has no ready-to-print state. Partial outputs and logs remain attached to the session and are visibly labeled invalid.
 
-- [ ] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
+- [ ] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_generation_ui_applies_worker_events_on_ui_loop, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
 - [ ] Run the generation UI test file and verify it fails before implementation.
 - [ ] Implement preview rendering from ExperimentPreview, including candidate map, plate count, and verified estimates.
 - [ ] Implement the job progress view with phase text, indeterminate progress when needed, expandable stdout/stderr, cancel action, and validation summary.
@@ -296,7 +296,7 @@ The concrete types may add fields needed by the implementation, but they must re
 - [ ] Run the Home/session UI test file and verify it fails before implementation.
 - [ ] Implement recent sessions, resume, archive, settings, and clean recovery for a missing/moved artifact.
 - [ ] Add keyboard traversal, visible focus, accessible names, scaling checks at 100/150/200 percent, and Windows/Linux file-dialog checks.
-- [ ] Run QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m unittest discover -s tests -v and confirm the headless suite also passes without the gui extra installed.
+- [ ] Run PYTHONPATH=src python -m unittest discover -s tests -v and confirm the headless suite also passes without the gui extra installed.
 - [ ] Run the acceptance workflow with an actual supported Orca version: import three profiles, generate and validate a 3x3 ironing run, resume after closing, record results, complete refinement and confirmation, and export a new process profile.
 - [ ] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
 - [ ] Commit as feat: complete calibration workbench GUI.
@@ -312,11 +312,13 @@ The GUI is ready for review when all of the following are demonstrated on Window
 - The user can close and resume every workflow stage, enter ratings/defects/verdicts/photos, and resolve ties explicitly.
 - The next range is explained from recorded evidence; final export waits for an accepted confirmation result or a recorded opt-out.
 - The export contains only accepted module settings, a readable diff, a reproducibility manifest, and a report.
-- Core imports and headless tests still work without PySide6 installed.
+- Core imports and headless tests still work without Dear PyGui installed.
 
 ## References
 
 - Repository implementation plan: IMPLEMENTATION_PLAN.md.
 - Current implementation status: docs/IMPLEMENTATION_STATUS.md.
-- Qt for Python official documentation: https://doc.qt.io/qtforpython-6/.
-- Qt for Python 6.8 release notes document Python 3.11 support: https://doc.qt.io/qtforpython-6.8/release_notes/pyside6_release_notes.html.
+- Dear PyGui documentation: https://dearpygui.readthedocs.io/en/latest/.
+- Dear PyGui callback queue and manual callback management: https://dearpygui.readthedocs.io/en/latest/documentation/item-callbacks.html.
+- Dear PyGui tables and themes: https://dearpygui.readthedocs.io/en/latest/documentation/tables.html and https://dearpygui.readthedocs.io/en/latest/documentation/themes.html.
+- Dear PyGui 2.3.1 Python wheels and platform tags: https://pypi.org/project/dearpygui/.
