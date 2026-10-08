@@ -202,13 +202,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - The UI observes GenerationEvent values, shows logs as they arrive, and enables Results only after state=succeeded and validation state is valid.
 - A canceled or failed job has no ready-to-print state. Partial outputs and logs remain attached to the session and are visibly labeled invalid.
 
-- [ ] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_generation_ui_applies_worker_events_on_ui_loop, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
-- [ ] Run the generation UI test file and verify it fails before implementation.
-- [ ] Implement preview rendering from ExperimentPreview, including candidate map, plate count, and verified estimates.
-- [ ] Implement the job progress view with phase text, indeterminate progress when needed, expandable stdout/stderr, cancel action, and validation summary.
-- [ ] Implement event subscription/unsubscription and close behavior so no orphaned UI callback can update a closed page.
-- [ ] Run UI tests and the original integration smoke test with the fake service.
-- [ ] Commit as feat: add calibration job progress UI.
+- [x] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_generation_ui_applies_worker_events_on_ui_loop, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
+- [x] Run the generation UI test file and verify it fails before implementation.
+- [x] Implement preview rendering from ExperimentPreview, including candidate map, plate count, and verified estimates.
+- [x] Implement the job progress view with phase text, indeterminate progress when needed, expandable stdout/stderr, cancel action, and validation summary.
+- [x] Implement render-loop event delivery and close behavior so no worker event can update a closed page.
+- [x] Run UI tests and the original integration smoke test with the fake service.
+- [x] Commit as feat: add calibration job progress UI.
 
 ## Task 6: Implement Result Entry, Attachments, and Explicit Outcome States
 

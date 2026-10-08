@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from calibrate3dp.experiments import ExperimentPlan
 from calibrate3dp.app.pages.profile_selection_page import ProfileSelectionPage
 from calibrate3dp.app.pages.experiment_review_page import ExperimentReviewPage
+from calibrate3dp.app.pages.generation_page import GenerationPage
 from calibrate3dp.app.pages.module_page import ModulePage
 from calibrate3dp.app.pages.setup_page import SetupPage
 from calibrate3dp.app.services.experiment_service import ExperimentService
@@ -77,6 +78,7 @@ class AppShell:
         self._profile_selection_page: ProfileSelectionPage | None = None
         self._module_page: ModulePage | None = None
         self._experiment_review_page: ExperimentReviewPage | None = None
+        self._generation_page: GenerationPage | None = None
         self.routes = RouteState()
         self._dpg = dpg_module
         self._context_created = False
@@ -130,8 +132,11 @@ class AppShell:
                 callbacks = dpg.get_callback_queue()
                 if callbacks:
                     dpg.run_callbacks(callbacks)
+                self._sync_generation_page()
                 dpg.render_dearpygui_frame()
         finally:
+            if self._generation_page is not None:
+                self._generation_page.close()
             if self._context_created:
                 dpg.destroy_context()
                 self._context_created = False
@@ -403,7 +408,7 @@ class AppShell:
 
             with dpg.group(horizontal=True):
                 for index, label in enumerate(
-                    ("PROFILES", "MODULE", "REVIEW", "GENERATE", "ASSESS"), start=1
+                    ("PROFILES", "MODULE", "REVIEW", "GENERATE", "RESULTS"), start=1
                 ):
                     dpg.add_text(f"{index:02d}  {label}", color=(133, 149, 166, 255))
                     if index < 5:
@@ -436,6 +441,13 @@ class AppShell:
                 on_plan_ready=self._on_experiment_plan_ready,
             )
             self._experiment_review_page.render()
+            self._generation_page = GenerationPage(
+                self.experiment_service,
+                dpg,
+                generation_service=self.services.get("generation_service"),
+                on_recovery=self._on_generation_recovery,
+            )
+            self._generation_page.render()
 
             dpg.add_spacer(height=18)
             dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
@@ -462,6 +474,32 @@ class AppShell:
 
     def _on_experiment_plan_ready(self, plan: ExperimentPlan) -> None:
         self.experiment_plan = plan
+
+    def _sync_generation_page(self) -> None:
+        """Drain worker events and reveal generation after the plan is accepted."""
+        page = self._generation_page
+        if page is None:
+            return
+        if (
+            self.experiment_plan is not None
+            and self.profile_selection is not None
+            and page.plan is not self.experiment_plan
+        ):
+            page.set_context(
+                session=self.services.get("session"),
+                plan=self.experiment_plan,
+                profiles=self.profile_selection,
+            )
+            if self._dpg is not None:
+                self._dpg.configure_item("experiment_review_panel", show=False)
+                self._dpg.configure_item("generation_panel", show=True)
+        page.poll_events()
+
+    def _on_generation_recovery(self) -> None:
+        """Return to the setup view so executable/profile configuration can be checked."""
+        if self._dpg is not None and self._dpg.does_item_exist("orca_setup_panel"):
+            self._dpg.configure_item("orca_setup_panel", show=True)
+        self.navigate("new_calibration")
 
     def _add_planned_module_card(self, name: str) -> None:
         with self._dpg.child_window(width=278, height=90, border=True):
