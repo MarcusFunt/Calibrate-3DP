@@ -5,6 +5,7 @@
 - [x] Add a source-layout Python package with no runtime dependencies.
 - [x] Resolve parent profile settings and retain per-key source provenance.
 - [x] Preserve unknown settings and original raw profile documents.
+- [x] Clone a source profile under a new name with only explicit, non-identity settings patched.
 - [x] Reject missing parents, cycles, duplicate identities, and ambiguous name-only selection.
 - [x] Require callers to declare cross-scope inheritance rules.
 - [ ] Add JSON/profile bundle loading and versioned Orca adapters.

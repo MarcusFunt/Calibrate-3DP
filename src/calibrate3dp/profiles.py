@@ -22,6 +22,10 @@ class InvalidProfileDocumentError(ProfileResolutionError):
     """Raised when a JSON file is not a valid named Orca-style preset."""
 
 
+class InvalidProfilePatchError(ProfileResolutionError):
+    """Raised when a profile clone patch could corrupt its Orca identity."""
+
+
 class DuplicateProfileError(ProfileResolutionError):
     """Raised when two documents claim the same typed, scoped identity."""
 
@@ -268,3 +272,45 @@ class ProfileCatalog:
             provenance=provenance,
             chain=(*chain, document),
         )
+
+
+def clone_profile_with_patch(
+    source: ProfileDocument,
+    *,
+    new_name: str,
+    patch: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Create a new raw profile document with only explicit settings changed.
+
+    The returned document retains the source inheritance and all unknown
+    fields. Version-specific bundle metadata and import validation belong to
+    the Orca export adapter, which can build on this loss-preserving primitive.
+    """
+    if not isinstance(source, ProfileDocument):
+        raise InvalidProfilePatchError("source must be a ProfileDocument")
+    if not isinstance(new_name, str) or not new_name.strip():
+        raise InvalidProfilePatchError("new profile name must be a non-empty string")
+    if new_name == source.name:
+        raise InvalidProfilePatchError("new profile name must differ from the source profile name")
+    if not isinstance(patch, Mapping):
+        raise InvalidProfilePatchError("profile patch must be a mapping of setting names to JSON values")
+
+    reserved = {"name", "type", "inherits"}
+    for setting in patch:
+        if not isinstance(setting, str) or not setting.strip():
+            raise InvalidProfilePatchError("profile patch setting names must be non-empty strings")
+        if setting in reserved:
+            raise InvalidProfilePatchError(
+                f"profile patch cannot overwrite reserved identity field {setting!r}"
+            )
+    try:
+        json.dumps(dict(patch), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise InvalidProfilePatchError(
+            "profile patch values must be valid JSON values"
+        ) from exc
+
+    candidate = deepcopy(dict(source.raw))
+    candidate["name"] = new_name
+    candidate.update(deepcopy(dict(patch)))
+    return candidate
