@@ -20,7 +20,8 @@ from calibrate3dp.app.models import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
+SESSION_PAYLOAD_SCHEMA_VERSION = 1
 PROFILE_SELECTION_RELATIVE_PATH = "profiles/profile-selection.json"
 
 
@@ -236,7 +237,7 @@ class SessionRepository:
             payload = json.loads(row["payload_json"])
             if not isinstance(payload, dict):
                 raise ValueError("session payload must be a JSON object")
-            if payload.get("schema_version") != CURRENT_SCHEMA_VERSION:
+            if payload.get("schema_version") != SESSION_PAYLOAD_SCHEMA_VERSION:
                 raise UnsupportedSessionSchemaError(
                     f"unsupported session payload schema {payload.get('schema_version')!r}"
                 )
@@ -323,7 +324,62 @@ class SessionRepository:
                     "CREATE INDEX sessions_recent_idx "
                     "ON sessions (archived, updated_at_utc DESC, session_id ASC)"
                 )
-                connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+                # Version 2 tables are created below as a separate migration so
+                # an existing version-1 session database follows the same path.
+                connection.execute("PRAGMA user_version = 1")
+                connection.commit()
+                version = 1
+            if version == 1:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """CREATE TABLE printers (
+                        printer_id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL UNIQUE,
+                        model TEXT NOT NULL,
+                        nozzle TEXT NOT NULL,
+                        machine_profile_json TEXT NOT NULL,
+                        process_profile_json TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    """CREATE TABLE materials (
+                        material_id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL UNIQUE,
+                        nozzle_context TEXT NOT NULL,
+                        filament_profile_json TEXT NOT NULL,
+                        toolhead_context TEXT,
+                        created_at_utc TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    """CREATE TABLE calibration_runs (
+                        run_id TEXT PRIMARY KEY,
+                        plate_code TEXT NOT NULL UNIQUE CHECK (
+                            length(plate_code) = 6 AND plate_code GLOB '[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]'
+                        ),
+                        printer_id TEXT NOT NULL REFERENCES printers(printer_id),
+                        material_id TEXT NOT NULL REFERENCES materials(material_id),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'generating', 'settings_validated', 'validation_failed', 'generation_failed', 'cancelled'
+                        )),
+                        created_at_utc TEXT NOT NULL,
+                        plan_json TEXT NOT NULL,
+                        profiles_json TEXT NOT NULL,
+                        sample_map_json TEXT NOT NULL,
+                        validation_json TEXT NOT NULL,
+                        artifacts_json TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX calibration_runs_recent_idx "
+                    "ON calibration_runs (created_at_utc DESC, run_id ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX calibration_runs_printer_idx "
+                    "ON calibration_runs (printer_id, created_at_utc DESC, run_id ASC)"
+                )
+                connection.execute("PRAGMA user_version = 2")
                 connection.commit()
         except Exception:
             connection.rollback()

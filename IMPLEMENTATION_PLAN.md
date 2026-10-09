@@ -35,9 +35,9 @@
 
 ## Existing foundation
 
-At origin/main commit 5ef7c4cf04a9b5da84bb570c9276cca98d1427d9, the repository already had profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. The shell has since been removed; some page adapters remain temporarily for workflow behavior and regression coverage while Qt replacements are built.
+The project foundation at origin/main commit `5ef7c4cf04a9b5da84bb570c9276cca98d1427d9` included profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. Since then, the Qt shell replaced the old launch path; some page adapters remain temporarily for workflow logic and regression coverage.
 
-The implementation has one active experiment planner: ironing flow × speed. Coupons are identical 30 × 30 × 4 mm boxes generated as separate STLs. Candidate plates are sliced independently. The application does not yet have a generic calibration catalog, dependency graph, sample-per-plate compiler, plate code, full V1 module set, printer history model, or PySide6 UI. docs/IMPLEMENTATION_STATUS.md is the current inventory.
+The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a149539eaef8`. The current feature worktree adds persistent printer/material/run records, a grouped 3MF ironing path, real-Orca G-code checks, and connected Qt profile-to-run/history workflow. This is still a single-module vertical slice: it does not yet have connected labeled specimens, a generic calibration catalog/compiler, dependency graph, full V1 module set, assessment/refinement/export integration for grouped runs, or print-readiness validation. See `docs/IMPLEMENTATION_STATUS.md` for the complete inventory.
 
 ---
 
@@ -45,7 +45,7 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 
 ### Preflight design gate: Evaluate the experiment configuration and geometry proposal
 
-**Status:** Design decision pending. The user requested an evaluation and explicitly identified this as a suggestion. Keep implementation choices open until the prototype evidence and a later decision.
+**Status:** Partially decided for the first grouped ironing workflow on 2026-10-09. Versioned profile/plan/sample snapshots are stored in SQLite, generated run artifacts remain in per-run folders with hashes, and a standard-library 3MF package is used for the proven object-settings path. The connected geometry backend, physical labels, full experiment compiler contract, and supported layout/version matrix remain open.
 
 **Files:**
 - Read/update: docs/EXPERIMENT_CONFIGURATION_PROPOSAL.md
@@ -58,13 +58,13 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - GeometryBackend: Python adapter that builds a layout from a compiled experiment.
 - OrcaAdapter: separate project/settings application, slicing, and G-code validation boundary.
 
-- [ ] Decide whether canonical configuration is a versioned JSON snapshot stored in SQLite, with relational indexes for lookup, and optional JSON import/export. Document how existing records migrate.
-- [ ] Decide whether large mesh/G-code artifacts remain in an app-managed immutable artifact store referenced by hash, rather than SQLite BLOBs. Preserve complete structured plate configuration and sample maps in the database either way.
+- [x] For the current printer/material and ironing-run records, use versioned JSON snapshots in SQLite and preserve existing v1 session rows during migration. A general canonical experiment-config schema and portable JSON import/export remain open.
+- [x] Keep meshes, G-code, and logs in per-run artifact folders and store relative paths, sizes, and SHA-256 values in SQLite. Keep the full current plan and sample map as structured DB data.
 - [ ] Prototype a connected 3 × 3 grid with robust hand-tool-separable links, A–I labels, and a six-character plate code in Python. Prototype build123d first; compare CadQuery if installation, geometry, or packaging evidence calls for it.
 - [ ] Verify valid geometry, exact bounds, sample separation, readable labels, connector dimensions, and repeat-generation behavior on the proposed platform matrix.
-- [ ] Import the generated project into supported Orca versions, assign distinct settings to at least three samples, slice, and prove the requested changes reached their intended toolpaths. Include a negative case.
+- [x] On the installed Windows Orca/profile combination, import a three-object project, assign different flow/speed values, slice, and prove the changes reached their intended toolpaths. An omitted-override negative case is rejected. This is evidence for one installation only, not a support-matrix entry.
 - [ ] Evaluate standard 3MF packaging support separately from Orca project metadata; add lib3mf only if a reproducible packaging prototype justifies its platform/dependency cost.
-- [ ] Record evidence, decision, alternatives, and user impact in docs/PROGRESS_HISTORY.md; update this plan and goal only after the architecture choice is accepted.
+- [x] Record the bounded evidence, scoped decision, alternatives, and user impact in docs/PROGRESS_HISTORY.md and update this plan/status. Keep the remaining architecture choices open until their gates are complete.
 
 **Verification:** The prototype emits the same normalized sample order, settings, layout, and expected geometry for identical versioned inputs; the Orca integration check demonstrates or blocks independent sample settings in G-code; packaging installs and runs on each claimed platform. A documentation review or mock test alone does not close this gate.
 
@@ -72,22 +72,23 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 ### Task 0: Validate a multi-sample Orca project
 
 **Files:**
-- Create or update: tests/integration/test_orca_plate_overrides.py
-- Create or update: tests/fixtures/orca/plate_override_reference.3mf and expected G-code checks
+- Create or update: tests/test_orca_slicer_integration.py
+- Create or update: grouped 3MF generation and retained expected G-code evidence
 - Update: docs/IMPLEMENTATION_STATUS.md and docs/PROGRESS_HISTORY.md
 
 **Interfaces:**
 - Consumes: current ProfileCatalog, OrcaProfileAdapter, OrcaCli, and installed Orca profiles.
 - Produces: a recorded capability result by Orca version and profile family.
 
-- [ ] Build a project with at least three adjacent sample objects using different ironing settings.
-- [ ] Slice with the exact installed Orca binary, isolated data directory, and resolved printer/filament/process profiles.
-- [ ] Parse the output and prove each object's requested settings affect its toolpath. Include a negative fixture where a setting is intentionally absent.
-- [ ] Check start/end code, temperature commands, bed bounds, output hashes, and version identity.
+- [x] Build a project with at least three separate sample objects in one 3MF layout using different ironing settings. (Connected/adjacent specimen geometry remains a separate geometry gate.)
+- [x] Slice with the exact installed Orca binary, isolated data directory, and resolved printer/filament/process profiles.
+- [x] Parse the output and prove each object's requested flow/speed settings affect its toolpath. Include a negative fixture where an override is intentionally absent.
+- [x] Check planned coupon bounds against the machine printable area and retain output hashes and both version identities.
+- [ ] Validate every emitted movement, start/end code, and temperature commands; reconcile the CLI banner and G-code identity before making a support claim.
 - [ ] Repeat on every proposed support-matrix entry and record raw commands, logs, and artifact hashes.
 - [ ] If overrides do not work, stop the single-plate implementation and document a version-specific safe alternative. Do not silently mark one-candidate-per-plate output as the requested grouped plate workflow.
 
-**Verification:** The real-Orca integration test passes for every claimed matrix entry. Mocked tests remain the normal unit-test path.
+**Verification:** The real-Orca integration test passes for the one tested installation, but CLI and G-code identities do not match, so the support matrix remains empty. The grouped output is validated for sample flow and speed only, not ready to print.
 
 ---
 
@@ -97,11 +98,9 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 
 **Files:**
 - Create: src/calibrate3dp/domain/records.py
-- Create: src/calibrate3dp/storage/database.py
-- Create: src/calibrate3dp/storage/migrations.py
-- Create: src/calibrate3dp/storage/repositories.py
 - Modify: src/calibrate3dp/storage/session_store.py
-- Test: tests/test_database_migrations.py and tests/test_domain_records.py
+- Create: src/calibrate3dp/storage/library_store.py
+- Test: tests/test_printer_library.py
 
 **Interfaces:**
 - PrinterRecord identifies a saved machine and its profile snapshots.
@@ -110,12 +109,12 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - ExperimentRecord, PlateRecord, SampleRecord, ArtifactRecord, and AssessmentRecord store immutable lineage and references.
 - Database.migrate() upgrades schema transactionally; repositories expose typed create/get/list/update operations.
 
-- [ ] Write migration tests from the existing session schema, including preserved session IDs and payloads.
-- [ ] Implement typed records with validation and versioned JSON serialization.
-- [ ] Add foreign keys, uniqueness constraints for plate codes, transaction boundaries, and explicit migration versions.
-- [ ] Keep large files in session/run artifact folders; store relative paths, media types, sizes, and SHA-256 values in SQLite.
-- [ ] Test interrupted migration rollback, duplicate identifiers, missing artifact files, and recovery messages.
-- [ ] Run the full current headless suite and the new storage tests.
+- [x] Write a migration test from the existing session schema, including preserved session IDs and payloads.
+- [x] Implement versioned typed printer, material, profile-snapshot, artifact, and calibration-run records. The complete V1 record catalog remains future work.
+- [x] Add the v1→v2 migration, foreign keys, plate-code uniqueness, and transactional run state transitions.
+- [x] Keep large files outside SQLite and record checked relative paths, media types, sizes, and SHA-256 values.
+- [ ] Test interrupted migration rollback, duplicate record IDs, missing artifact files, and recovery messages.
+- [x] Run the full current suite and new storage tests; 159 tests ran and 3 were skipped on 2026-10-09.
 
 ### Task 2: Establish the PySide6 application shell early
 
@@ -132,8 +131,8 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - Navigation pages: Printer Library, Printer Workspace, New Calibration, Runs/History, and Settings.
 
 - [x] Add PySide6 to the optional GUI dependency group and retain headless imports without PySide6.
-- [ ] Implement a clean Qt shell with application startup, navigation, empty/loading/error states, and keyboard focus visibility.
-- [ ] Add an offscreen Qt smoke test for application startup and page navigation.
+- [x] Implement the Qt shell with application startup, navigation, empty/error states, keyboard focus visibility, and connected printer/material/workspace/generation/history/settings routes.
+- [x] Add offscreen Qt smoke tests for application startup, page navigation, and the saved-record generation/lookup flow.
 - [x] Show saved printer entries from a fake repository in a view-model test.
 - [x] Remove the Dear PyGui application entry point and dependency at the user's direction; keep remaining page adapters unreachable from the supported Qt entry point until their workflows are ported.
 - [x] Verify that a headless import and all non-GUI tests pass when the GUI extra is not installed.
@@ -152,9 +151,9 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - LibraryService.resolve_selection(printer_id, material_id, process_profile_id) returns ProfileSelection.
 - Every import is read-only and preserves source path, raw document, effective values, provenance, and content hash.
 
-- [ ] Import single Orca JSON presets and supported ZIP bundles into app-managed records.
-- [ ] Support saved printers from earlier app sessions and explicit profile re-import/versioning.
-- [ ] Show inheritance, compatibility, missing values, and unknown settings in the profile review.
+- [x] Import local Orca JSON presets and supported ZIP bundles into the profile resolver; save selected printer/material snapshots without writing to Orca directories.
+- [x] Reopen saved printer/material records across app sessions. Explicit replacement/version history for re-imported profiles remains open.
+- [ ] Show inheritance, compatibility, missing values, and unknown settings in a dedicated Qt profile review.
 - [ ] Test ambiguous names, parent cycles, deleted source files, renamed files, and changed profile hashes.
 - [ ] Confirm no service writes to Orca's profile directories.
 
@@ -351,11 +350,11 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - Create or complete: Qt Printer Library, Printer Workspace, Calibration Graph, plate-code lookup, and run-detail pages.
 - Test: tests/test_qt_printer_workspace.py, tests/test_qt_calibration_graph.py, and tests/test_qt_code_lookup.py
 
-- [ ] Let the user select a saved printer, then inspect its history, materials, calibration statuses, and prerequisites.
+- [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration statuses and prerequisites are not yet implemented.
 - [ ] Render the graph from DependencyEvaluator output. The UI does not calculate prerequisite logic itself.
-- [ ] Allow lookup by six-character plate code and show all samples, exact settings, artifacts, validation, and manual results.
-- [ ] Keep the run generation service cancellable and responsive.
-- [ ] Test status transitions and graph rendering with fake repositories and fake slicer services.
+- [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, and validation. Manual results are not yet attached to this workflow.
+- [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
+- [ ] Test calibration status transitions and graph rendering with fake repositories and fake slicer services.
 
 ### Task 15: Complete acceptance matrix and release evidence
 

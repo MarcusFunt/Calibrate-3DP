@@ -1,6 +1,6 @@
 # Reuse Research
 
-Reviewed for Calibrate-3DP V1 planning on 2026-10-09. The goal is to reuse reliable pipeline components where they fit, while keeping the app's experiment compiler, dependency model, and traceability under this repository's control.
+Reviewed for Calibrate-3DP V1 planning and the grouped-settings gate on 2026-10-09. The goal is to reuse reliable pipeline components where they fit, while keeping the app's experiment compiler, dependency model, geometry, and traceability under this repository's control.
 
 ## Summary
 
@@ -9,13 +9,13 @@ No reviewed project supplies the complete combination required here: Orca profil
 The best reuse is narrow:
 1. Keep the current Orca CLI, profile-resolution, job isolation, manifest, and session code as the pipeline base.
 2. Use Orca's calibration documentation and settings as versioned reference inputs for the module catalog.
-3. Study PA-Helper's per-object 3MF construction and manual grid semantics. Reimplement only after the V1 per-object slicing gate and license review.
-4. Prototype build123d as the first Python CAD candidate, with CadQuery as a comparison; keep the geometry backend replaceable. Consider lib3mf for standard 3MF mesh/package handling only if it materially reduces code and its Python packaging is supportable. It does not replace Orca-specific project settings.
+3. The first per-object 3MF settings gate now passes on one installed Orca/profile combination. A first-party standard-library writer packages separate coupon objects and Orca metadata; it passed real-slicer G-code checks. It does not yet build connected breakaway geometry.
+4. Keep build123d as a candidate for connected coupon CAD, with CadQuery as a comparison; keep the geometry backend replaceable. Consider lib3mf for standard 3MF mesh/package handling only if it materially reduces code and its Python packaging is supportable. It does not replace Orca-specific project settings.
 5. Use tower and coupon repositories as geometry references. Check every model's license separately before redistributing assets.
 
 ## Experiment configuration proposal
 
-The separate [Experiment Configuration and Generation Proposal](EXPERIMENT_CONFIGURATION_PROPOSAL.md) recommends evaluating a typed, versioned configuration, an immutable compiled manifest, a replaceable Python geometry backend, and a separate Orca settings/slicing adapter. This is a proposal, not an adopted V1 requirement.
+The separate [Experiment Configuration and Generation Proposal](EXPERIMENT_CONFIGURATION_PROPOSAL.md) recommends a typed, versioned configuration, an immutable compiled manifest, a replaceable Python geometry backend, and a separate Orca settings/slicing adapter. The current workflow adopts the SQLite snapshot/per-run artifact split for printer, material, plan, and sample data, and uses its first-party 3MF writer for grouped settings. The full canonical schema, connected CAD backend, physical labels, and broader support matrix remain open.
 
 ## Python geometry candidates
 
@@ -29,9 +29,9 @@ Both CAD options use an OpenCascade-based native geometry stack; packaged depend
 
 ### Calibrate-3DP main
 
-Source: https://github.com/MarcusFunt/Calibrate-3DP/tree/5ef7c4cf04a9b5da84bb570c9276cca98d1427d9
+Source: https://github.com/MarcusFunt/Calibrate-3DP/tree/c899021daa38c990bcd81466b4b9a149539eaef8
 
-The current code already has a useful base: Orca profile import and inheritance resolution, deterministic candidate plans, manual assessments, isolated CLI invocation, output hashes, manifests, persistence, and profile export. Preserve and generalize these boundaries. The main missing layer is a typed compiler and module registry that can compile all tests to reusable plates and slicer jobs.
+At the reviewed origin/main commit, the code has Orca profile import and inheritance resolution, deterministic candidate plans, manual assessments, isolated CLI invocation, output hashes, manifests, persistence, and profile export. The feature worktree adds persistent printer/material/run snapshots and the first grouped sample path; its manifest captures an unreconciled CLI/G-code identity mismatch. Preserve and generalize these boundaries. The broader compiler and module registry, connected plate generator, and end-to-end assessment/export UI are still missing.
 
 ### OrcaSlicer
 
@@ -51,7 +51,7 @@ Source and license: https://github.com/4o66/pa-helper and https://github.com/4o6
 
 PA-Helper generates an Orca-readable 3MF with per-pad ironing flow/speed overrides and a visible grid, and supports manual pad selection/result persistence. Its README labels the software early beta. Its code is AGPL-3.0; its method notes describe reverse-engineering the Orca/Bambu-style 3MF project metadata. Its base ironing model is separately attributed CC0.
 
-Use it as the closest behavioral and file-format reference. The current project does not meet V1's connected, labeled, code-bearing plate requirement. Copying source code also introduces license obligations; review and record the decision before any copying. An independent writer using the published 3MF structure and standard package libraries is an alternative, followed by Orca-version integration tests.
+Use it as the closest behavioral and file-format reference. The project has independently implemented the required 3MF object-settings mapping with Python's standard library and proved sample flow/speed in Orca output, without copying PA-Helper code or assets. The current project still does not meet V1's connected, physically labeled, code-bearing plate requirement. The real-slicer proof applies only to its recorded Windows installation and profile set.
 
 ### lib3mf
 

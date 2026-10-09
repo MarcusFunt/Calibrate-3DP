@@ -50,7 +50,7 @@ The compiler supports test-specific layouts. Flat specimens such as ironing and 
 
 ## Experiment configuration and reproducibility
 
-Every generated experiment must retain a versioned machine-readable plan snapshot, resolved sample-to-setting map, source profile fingerprints, tool versions, and generated artifact hashes. Plate-code lookup must recover that evidence after application upgrades. Deterministic generation must be qualified by the exact plan, compiler and geometry versions; stored artifacts and hashes remain the definitive record. The architecture proposal in [Experiment Configuration and Generation](EXPERIMENT_CONFIGURATION_PROPOSAL.md) is an evaluation, not an adopted V1 requirement.
+Every generated experiment must retain a versioned machine-readable plan snapshot, resolved sample-to-setting map, source profile fingerprints, tool versions, and generated artifact hashes. Plate-code lookup must recover that evidence after application upgrades. Deterministic generation must be qualified by the exact plan, compiler and geometry versions; stored artifacts and hashes remain the definitive record. The bounded SQLite snapshot/artifact split and standard-library 3MF proof path are recorded implementation decisions; the wider architecture proposal in [Experiment Configuration and Generation](EXPERIMENT_CONFIGURATION_PROPOSAL.md) remains partly open and does not change the requirements in this goal.
 
 ## Dependency and history behavior
 

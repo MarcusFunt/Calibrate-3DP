@@ -4,11 +4,11 @@ Calibrate-3DP is a local desktop workbench for structured FDM calibration using 
 
 ## Current state
 
-The current checkout is an early implementation, not V1. It contains a Python headless core and the first PySide6 application shell. The Qt shell follows the supplied printer chooser mockup and has routes for Printer Library, Printer Workspace, New Calibration, Runs / History, and Settings. The library currently uses a typed service boundary and empty state; persistent saved printers and profile intake are not connected yet. The other routes are initial placeholders. The Dear PyGui application shell and dependency have been removed; its older page adapters remain as transitional code while their workflows are ported to Qt.
+The current implementation is not V1. The PySide6 shell can import or select local Orca profiles, persist printer and material records, open a printer workspace, generate a grouped nine-sample ironing run through Orca on a worker thread, and inspect or look up saved runs by plate code. Settings holds the Orca executable, profile roots, and local workspace. Runs retain their plan, sample map, profiles, logs, and artifact hashes.
 
-The current ironing path creates one simple STL and one separate Orca job per candidate. It has no multi-sample plate compiler, printed six-character plate code, compact sample labels, generic calibration dependency graph, complete V1 calibration catalog, or persistent printer calibration history. Multi-object 3MF overrides are unverified. The V1 goal and implementation plan describe intended work; they do not describe shipped code.
+The grouped ironing path writes separate coupon objects into one standard 3MF project. An opt-in real-Orca check proves independent ironing flow and speed changes in each sample's toolpaths and rejects an omitted object override. The six-character plate code and sample names are saved in metadata; they are not printed, the coupons are not connected, and the run is never presented as ready to print. The CLI banner and G-code version identity remain unreconciled for the tested Windows installation. The V1 goal and implementation plan describe the remaining target behavior.
 
-The latest full local test run is recorded in docs/PROGRESS_HISTORY.md. Qt smoke tests require the optional PySide6 dependency and run with the offscreen Qt platform; they are skipped when that dependency is absent. The installed-Orca integration test remains opt-in.
+The latest full local test run is recorded in docs/PROGRESS_HISTORY.md. Qt smoke tests require the optional PySide6 dependency and run with the offscreen Qt platform; they are skipped when that dependency is absent. The installed-Orca integration test remains opt-in and its result applies only to the recorded binary and profiles.
 
 ## V1 scope
 
@@ -34,7 +34,7 @@ Install the optional GUI dependencies and start the new Qt shell with:
     python -m pip install -e ".[gui]"
     calibrate3dp
 
-The Qt shell currently provides the printer chooser and page navigation; persistent profile import and the calibration workflows are still being implemented. Dear PyGui is no longer an application option.
+The Qt shell provides printer and material intake, a printer workspace, grouped ironing generation, run history and plate-code lookup, and Orca settings. Calibration assessment, dependency graph, physical plate design, and the other V1 modules are still in progress. Dear PyGui is no longer an application option.
 
 Headless and optional GUI tests can be run with:
 

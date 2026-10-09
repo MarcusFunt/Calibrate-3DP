@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,6 +22,18 @@ from PySide6.QtWidgets import (
 from .navigation import AppPage, NavigationRail
 from .theme import TOKENS, application_stylesheet
 from .view_models import PrinterLibraryService, PrinterLibraryViewModel, PrinterSummary
+from .workflow_widgets import (
+    AddMaterialDialog,
+    AddPrinterDialog,
+    NewCalibrationPage,
+    OrcaSettingsPage,
+    PrinterWorkspacePage,
+    RunHistoryPage,
+)
+from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
+from calibrate3dp.app.services.library_service import LibraryService
+from calibrate3dp.app.services.profile_service import ProfileService
+from calibrate3dp.app.services.settings_service import AppSettingsService
 
 
 def _search_icon() -> QIcon:
@@ -170,6 +179,7 @@ class PrinterRow(QPushButton):
 
 class PrinterLibraryPage(QWidget):
     open_printer = Signal(str)
+    add_printer_requested = Signal()
 
     def __init__(self, model: PrinterLibraryViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -264,21 +274,21 @@ class PrinterLibraryPage(QWidget):
         import_layout = QVBoxLayout(import_panel)
         import_layout.setContentsMargins(4, 0, 0, 0)
         import_layout.setSpacing(14)
-        import_title = QLabel("Import a printer")
+        import_title = QLabel("Add a printer")
         import_title.setObjectName("sectionTitle")
         import_description = QLabel(
-            "Load a printer profile from a local file to add a new printer to Calibrate-3DP."
+            "Choose local OrcaSlicer machine and process presets, then save resolved printer records."
         )
         import_description.setObjectName("bodyCopy")
         import_description.setWordWrap(True)
-        self.browse_button = QPushButton("Browse profiles")
+        self.browse_button = QPushButton("Add printer")
         self.browse_button.setObjectName("secondaryAction")
         self.browse_button.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
         )
         self.browse_button.setMinimumHeight(47)
-        self.browse_button.clicked.connect(self._browse_profiles)
-        self.import_status = QLabel("Profiles stay on this computer.")
+        self.browse_button.clicked.connect(lambda _checked=False: self.add_printer_requested.emit())
+        self.import_status = QLabel("Source Orca presets remain unchanged.")
         self.import_status.setObjectName("mutedStatus")
         self.import_status.setWordWrap(True)
         import_layout.addWidget(import_title)
@@ -337,6 +347,10 @@ class PrinterLibraryPage(QWidget):
         self.model.reload()
         self._refresh_rows()
 
+    def refresh(self) -> None:
+        self.model.reload()
+        self._refresh_rows()
+
     def _select_printer(self, printer_id: str) -> None:
         self.model.select(printer_id)
         for row_id, row in self.rows.items():
@@ -349,19 +363,6 @@ class PrinterLibraryPage(QWidget):
         selected = self.model.selected_printer
         if selected is not None:
             self.open_printer.emit(selected.printer_id)
-
-    def _browse_profiles(self) -> None:
-        path, _filter = QFileDialog.getOpenFileName(
-            self,
-            "Choose an OrcaSlicer printer profile",
-            str(Path.home()),
-            "Printer profiles (*.json *.zip);;All files (*)",
-        )
-        if path:
-            self.import_status.setText(
-                f"Selected {Path(path).name}. Profile validation and saving are coming in the library workflow."
-            )
-
 
 class PlaceholderPage(QWidget):
     def __init__(self, title: str, description: str, parent: QWidget | None = None) -> None:
@@ -379,47 +380,25 @@ class PlaceholderPage(QWidget):
         layout.addStretch(1)
 
 
-class PrinterWorkspacePage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 36, 40, 36)
-        layout.setSpacing(12)
-        self.heading = QLabel("Printer Workspace")
-        self.heading.setObjectName("pageTitle")
-        self.printer_context = QLabel("No printer is selected.")
-        self.printer_context.setObjectName("bodyCopy")
-        self.printer_context.setWordWrap(True)
-        self.state = QLabel("Calibration status and history will appear here.")
-        self.state.setObjectName("mutedStatus")
-        layout.addWidget(self.heading)
-        layout.addWidget(self.printer_context)
-        layout.addWidget(self.state)
-        layout.addStretch(1)
-
-    def show_printer(self, printer: PrinterSummary | None) -> None:
-        if printer is None:
-            self.printer_context.setText("No printer is selected.")
-            return
-        self.printer_context.setText(
-            f"{printer.name}  ·  {printer.model}  ·  {printer.nozzle} nozzle"
-        )
-        self.state.setText(
-            "This printer is selected. Calibration status and saved runs will appear here "
-            "when the printer library and history services are connected."
-        )
-
-
 class MainWindow(QMainWindow):
     """Route-aware application frame that receives a typed library service."""
 
-    def __init__(self, printer_library: PrinterLibraryService) -> None:
+    def __init__(
+        self,
+        printer_library: PrinterLibraryService,
+        *,
+        library_service: LibraryService | None = None,
+        generation_service: GroupedOrcaGenerationService | None = None,
+        settings_service: AppSettingsService | None = None,
+        profile_service: ProfileService | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Calibrate-3DP")
         self.setMinimumSize(1120, 720)
         self.resize(1280, 820)
         self.setStyleSheet(application_stylesheet())
         self.view_model = PrinterLibraryViewModel(printer_library)
+        self.library_service = library_service
         self._current_page = AppPage.PRINTER_LIBRARY
 
         canvas = QWidget()
@@ -436,30 +415,25 @@ class MainWindow(QMainWindow):
         self.page_widgets: dict[AppPage, QWidget] = {}
         library = PrinterLibraryPage(self.view_model)
         library.open_printer.connect(self._open_printer_workspace)
+        library.add_printer_requested.connect(self._add_printer)
+        self.library_page = library
         self._add_page(AppPage.PRINTER_LIBRARY, library)
-        self.workspace_page = PrinterWorkspacePage()
+        self.workspace_page = PrinterWorkspacePage(library_service, generation_service)
+        self.workspace_page.add_material_requested.connect(self._add_material)
+        self.workspace_page.run_finished.connect(self._refresh_history)
         self._add_page(AppPage.PRINTER_WORKSPACE, self.workspace_page)
-        self._add_page(
-            AppPage.NEW_CALIBRATION,
-            PlaceholderPage(
-                "New Calibration",
-                "Calibration setup will guide you through prerequisites, fixed settings, and sample factors.",
-            ),
-        )
-        self._add_page(
-            AppPage.RUNS_HISTORY,
-            PlaceholderPage(
-                "Runs / History",
-                "Generated experiments and manually recorded results will be listed here.",
-            ),
-        )
-        self._add_page(
-            AppPage.SETTINGS,
-            PlaceholderPage(
-                "Settings",
-                "Local workspace and OrcaSlicer setup will be managed here.",
-            ),
-        )
+        new_calibration = NewCalibrationPage()
+        new_calibration.open_printer_library.connect(self._open_selected_for_calibration)
+        self._add_page(AppPage.NEW_CALIBRATION, new_calibration)
+        self.history_page = RunHistoryPage(library_service)
+        self._add_page(AppPage.RUNS_HISTORY, self.history_page)
+        if settings_service is not None and profile_service is not None and library_service is not None:
+            settings_page = OrcaSettingsPage(settings_service, profile_service, library_service)
+        else:
+            settings_page = PlaceholderPage(
+                "Settings", "OrcaSlicer setup is available in the configured local application."
+            )
+        self._add_page(AppPage.SETTINGS, settings_page)
         root.addWidget(self.pages, 1)
         self.setCentralWidget(canvas)
         self.navigation.set_current_page(self._current_page)
@@ -479,4 +453,39 @@ class MainWindow(QMainWindow):
         self.view_model.select(printer_id)
         self.workspace_page.show_printer(self.view_model.selected_printer)
         self.navigate_to(AppPage.PRINTER_WORKSPACE)
+
+    def _add_printer(self) -> None:
+        if self.library_service is None:
+            self.library_page.import_status.setText("The persistent profile library is unavailable.")
+            return
+        dialog = AddPrinterDialog(self.library_service, self)
+        if dialog.exec() != dialog.DialogCode.Accepted or dialog.record is None:
+            return
+        self.library_page.refresh()
+        self.view_model.select(dialog.record.printer_id)
+        self.library_page._refresh_rows()
+        self._open_printer_workspace(dialog.record.printer_id)
+
+    def _add_material(self, printer_id: str) -> None:
+        if self.library_service is None:
+            return
+        try:
+            printer = self.library_service.repository.get_printer(printer_id)
+        except Exception as exc:
+            self.workspace_page.state.setText(f"The saved printer could not be loaded: {exc}")
+            return
+        dialog = AddMaterialDialog(self.library_service, printer, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.workspace_page.refresh()
+
+    def _open_selected_for_calibration(self) -> None:
+        printer = self.view_model.selected_printer
+        if printer is None:
+            self.navigate_to(AppPage.PRINTER_LIBRARY)
+            return
+        self.workspace_page.show_printer(printer)
+        self.navigate_to(AppPage.PRINTER_WORKSPACE)
+
+    def _refresh_history(self) -> None:
+        self.history_page.refresh()
 

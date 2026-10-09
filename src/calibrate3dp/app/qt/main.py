@@ -41,9 +41,50 @@ def run(argv: Sequence[str] | None = None) -> int:
     """Start the Qt shell and run its event loop."""
     application = create_application(argv)
     from .main_window import MainWindow
-    from .view_models import EmptyPrinterLibraryService
+    from .view_models import PrinterLibraryUnavailableError, PrinterSummary
+    from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
+    from calibrate3dp.app.services.library_service import LibraryService
+    from calibrate3dp.app.services.profile_service import ProfileService
+    from calibrate3dp.app.services.settings_service import AppSettingsService
+    from calibrate3dp.orca_cli import OrcaCli
+    from calibrate3dp.storage.library_store import LibraryRepository
+    from calibrate3dp.storage.session_store import SessionRepository
 
-    window = MainWindow(EmptyPrinterLibraryService())
+    settings_service = AppSettingsService()
+    workspace = settings_service.settings.workspace_root
+    sessions = SessionRepository(workspace)
+    records = LibraryRepository(sessions)
+    profiles = ProfileService(
+        executable=settings_service.settings.orca_executable,
+        config_roots=settings_service.settings.orca_config_roots,
+    )
+    profiles.discover_profiles()
+    library = LibraryService(records, profiles)
+
+    class SavedPrinterLibrary:
+        def list_saved_printers(self):
+            try:
+                return tuple(
+                    PrinterSummary(record.printer_id, record.display_name, record.model, record.nozzle)
+                    for record in library.list_printers()
+                )
+            except Exception as exc:
+                raise PrinterLibraryUnavailableError(str(exc)) from exc
+
+    def cli_provider():
+        executable = profiles.setup_state.executable
+        if executable is None or not executable.is_file():
+            return None
+        return OrcaCli(executable)
+
+    generation = GroupedOrcaGenerationService(library, cli_provider=cli_provider)
+    window = MainWindow(
+        SavedPrinterLibrary(),
+        library_service=library,
+        generation_service=generation,
+        settings_service=settings_service,
+        profile_service=profiles,
+    )
     window.show()
     application._calibrate3dp_main_window = window  # keep the top-level widget alive
     return application.exec()

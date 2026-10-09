@@ -1,6 +1,6 @@
 # Experiment Configuration and Generation Proposal
 
-**Status: evaluated proposal, not an adopted V1 requirement.** This records a design recommendation for the experiment configurator/compiler. The user asked that it be evaluated and explicitly said it is only a suggestion. Do not implement these choices as settled product requirements without a later decision.
+**Status: partially adopted for the first grouped ironing workflow (2026-10-09); remaining design choices are open.** The original recommendation was a proposal. The local implementation and real-Orca evidence now support a narrow decision: persist versioned profile, plan, and sample snapshots in SQLite; retain generated files as hash-referenced per-run artifacts; and use a standard-library 3MF package for the grouped-settings proof. This does not settle the connected plate CAD backend, physical label design, complete experiment compiler contract, or supported layout strategy.
 
 ## Assessment
 
@@ -41,7 +41,7 @@ A Python CAD library is a better fit than an OpenSCAD subprocess for the request
 
 I recommend prototyping build123d first because the geometry is simple but benefits from explicit solids/unions for connectors and labels. Keep CadQuery as the comparison if its packaging or topology handling proves better. Do not settle this from feature lists: test installation/bundling on supported desktop platforms, stable mesh export, text labels, connected coupon geometry, and actual Orca import. The CAD library decision is still open.
 
-Orca's published import/export and CLI guidance describes splitting a 3MF into separate parts for per-part print-setting changes and exposes per-object settings in its CLI. Those references justify a prototype, but do not prove the exact independent setting behavior needed by this application. A real-slicer test and G-code checks remain a release gate. Sources: [Orca import/export](https://www.orcaslicer.com/wiki/general_settings/import_export), [Orca CLI mode](https://www.orcaslicer.com/wiki/cli/cli_mode).
+The 2026-10-09 Windows gate proves independent ironing flow and speed settings for three separate coupon objects in one 3MF project using real Orca output; a negative case proves the validator rejects an omitted override. The production generation service also sliced and persisted a nine-sample project. The proof applies to the exact recorded installation/profile set only: Orca reported `OrcaSlicer-01.10.01.50` in its CLI banner but wrote `OrcaSlicer 2.3.0` in G-code. This mismatch is unresolved, so no supported-version claim or print-ready result follows. The objects are separate coupon bodies rather than connected breakaway specimens, and labels/code remain metadata only. Sources: [Orca import/export](https://www.orcaslicer.com/wiki/general_settings/import_export), [Orca CLI mode](https://www.orcaslicer.com/wiki/cli/cli_mode), and the retained test artifacts listed in `docs/PROGRESS_HISTORY.md`.
 
 ## Required architecture spike before committing to a backend
 
@@ -50,10 +50,10 @@ Orca's published import/export and CLI guidance describes splitting a 3MF into s
 3. Validate bed bounds, distinct sample meshes/names, connector geometry, label placement, watertightness, and repeat-generation stability.
 4. Package/import the output in the exact Orca versions and profiles under consideration. Assign different supported settings to at least three samples, slice, and prove the changes reached their intended toolpaths. Include an intentionally invalid case that must be blocked.
 5. Record commands, environment, input config, tool versions, hashes, Orca logs, G-code findings, platform packaging impact, and the decision in `docs/PROGRESS_HISTORY.md`.
-6. After the evidence, choose the CAD backend, persistence representation, artifact storage policy, 3MF packaging approach, and supported layout/settings capability matrix. Keep unresolved decisions visible.
+6. After the evidence, choose the CAD backend, full canonical experiment representation, physical label approach, connected layouts, and supported layout/settings capability matrix. The narrow persistence split and standard-library 3MF proof path are implemented; keep their scope and remaining choices visible.
 
 ## Recommendation
 
-Proceed with the architecture concept as a design candidate: one typed/versioned experiment configuration, persisted and searchable through the database; a GUI configurator that creates that data; one headless deterministic compiler; a Python geometry backend; a separate Orca application/validation adapter; and a searchable experiment history view keyed by the plate code.
+Proceed with the architecture concept as a design candidate: one typed/versioned experiment configuration, persisted and searchable through the database; a GUI configurator that creates that data; one headless deterministic compiler; a Python geometry backend; a separate Orca application/validation adapter; and a searchable experiment history view keyed by the plate code. The current first workflow implements part of this path, from saved profiles to grouped ironing generation and code lookup.
 
-Adopt the separation and prototype gate above. Keep the exact CAD library, physical DB-vs-artifact storage boundary, configuration file import/export, and tab naming open until the spike and user review. This evaluation does not authorize camera workflows, automatic assessment, or any other excluded V1 feature.
+The implementation adopts the separation of records from large artifacts for its current data, and has demonstrated the Orca 3MF object mapping needed for grouped ironing. The exact CAD library, connected geometry, physical labels, portable configuration import/export, and broad capability matrix remain open. This evaluation does not authorize camera workflows, automatic assessment, or any other excluded V1 feature.
