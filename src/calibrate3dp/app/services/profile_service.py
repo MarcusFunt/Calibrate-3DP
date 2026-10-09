@@ -147,9 +147,11 @@ class ProfileService:
             cli_status="Detected; not checked" if self._executable else "OrcaSlicer not detected",
         )
 
-    def set_config_roots(self, roots: Sequence[str | Path]) -> None:
-        """Set in-memory profile roots; no Orca configuration is modified."""
-        self._config_root_overrides = tuple(Path(root).expanduser() for root in roots)
+    def set_config_roots(self, roots: Sequence[str | Path] | None) -> None:
+        """Set profile-root overrides, or return to automatic discovery."""
+        self._config_root_overrides = (
+            tuple(Path(root).expanduser() for root in roots) if roots is not None else None
+        )
         self._setup_state = OrcaSetupState(
             executable=self._executable,
             config_roots=self._config_roots(),
@@ -382,26 +384,41 @@ class ProfileService:
             compatibility_warnings=warnings,
         )
 
-    def export_diagnostics(self, destination: str | Path) -> Path:
-        """Write an offline setup report containing metadata but no profile values."""
+    def export_diagnostics(
+        self,
+        destination: str | Path,
+        *,
+        include_paths: bool = True,
+        include_profile_counts: bool = True,
+    ) -> Path:
+        """Write an offline setup report containing only the selected metadata."""
+        if type(include_paths) is not bool or type(include_profile_counts) is not bool:
+            raise TypeError("diagnostics inclusion options must be booleans")
         target = Path(destination).expanduser()
         state = self._setup_state
         counts = Counter(document.kind for document in self._documents)
+        orca = {
+            "version_banner": state.version_banner,
+            "last_checked_at_utc": state.last_checked_at_utc,
+            "cli_status": state.cli_status,
+            "compatibility_status": state.compatibility_status,
+            "error": (
+                state.error
+                if include_paths or state.error is None
+                else "The setup check returned an error; local paths were excluded."
+            ),
+        }
+        if include_paths:
+            orca["executable"] = str(state.executable) if state.executable else None
+            orca["config_roots"] = [str(root) for root in state.config_roots]
         payload = {
             "schema_version": 1,
             "created_at_utc": _utc_now(),
-            "orca": {
-                "executable": str(state.executable) if state.executable else None,
-                "config_roots": [str(root) for root in state.config_roots],
-                "version_banner": state.version_banner,
-                "last_checked_at_utc": state.last_checked_at_utc,
-                "cli_status": state.cli_status,
-                "compatibility_status": state.compatibility_status,
-                "error": state.error,
-            },
-            "profiles": {"count_by_kind": dict(sorted(counts.items()))},
+            "orca": orca,
             "discovery_issue_count": len(self._discovery_issues),
         }
+        if include_profile_counts:
+            payload["profiles"] = {"count_by_kind": dict(sorted(counts.items()))}
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
@@ -532,7 +549,7 @@ class ProfileService:
             return self._executable_detector()
         configured = os.environ.get("ORCA_SLICER_EXE")
         candidates: list[Path] = [Path(configured).expanduser()] if configured else []
-        for command in ("OrcaSlicer", "orca-slicer", "orcaslicer"):
+        for command in ("orca-slicer-console", "OrcaSlicer", "orca-slicer", "orcaslicer"):
             found = shutil.which(command)
             if found:
                 candidates.append(Path(found))
@@ -540,7 +557,11 @@ class ProfileService:
             for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
                 base = os.environ.get(variable)
                 if base:
-                    candidates.append(Path(base) / "OrcaSlicer" / "orca-slicer.exe")
+                    install = Path(base) / "OrcaSlicer"
+                    candidates.extend((
+                        install / "orca-slicer-console.exe",
+                        install / "orca-slicer.exe",
+                    ))
         elif sys_platform_is_macos():
             candidates.append(
                 Path("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")

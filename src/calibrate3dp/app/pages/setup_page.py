@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from calibrate3dp.app.services.profile_service import OrcaSetupState, ProfileService
+from calibrate3dp.app.services.settings_service import AppSettings
 
 
 class SetupPage:
@@ -17,10 +18,12 @@ class SetupPage:
         dpg: Any,
         *,
         on_profiles_changed: Callable[[], None] | None = None,
+        diagnostics_options: Callable[[], AppSettings] | None = None,
     ) -> None:
         self.service = service
         self.dpg = dpg
         self.on_profiles_changed = on_profiles_changed
+        self.diagnostics_options = diagnostics_options
 
     def render(self) -> None:
         dpg = self.dpg
@@ -109,7 +112,14 @@ class SetupPage:
         if not destination:
             return
         try:
-            path = self.service.export_diagnostics(destination)
+            options = self.diagnostics_options() if self.diagnostics_options else None
+            path = self.service.export_diagnostics(
+                destination,
+                include_paths=options.include_diagnostics_paths if options else True,
+                include_profile_counts=(
+                    options.include_diagnostics_profile_counts if options else True
+                ),
+            )
         except OSError as exc:
             self.dpg.set_value("orca_setup_error", f"Diagnostics could not be saved: {exc}")
         else:

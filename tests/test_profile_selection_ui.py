@@ -87,10 +87,21 @@ class ProfileSelectionServiceTests(unittest.TestCase):
 
             written = service.export_diagnostics(destination)
             payload = written.read_text(encoding="utf-8")
+            private_destination = root / "private-diagnostics.json"
+            private_payload = json.loads(
+                service.export_diagnostics(
+                    private_destination,
+                    include_paths=False,
+                    include_profile_counts=False,
+                ).read_text(encoding="utf-8")
+            )
 
         self.assertIn('"count_by_kind"', payload)
         self.assertNotIn("private_setting", payload)
         self.assertNotIn("do not export", payload)
+        self.assertNotIn("profiles", private_payload)
+        self.assertNotIn("executable", private_payload["orca"])
+        self.assertNotIn("config_roots", private_payload["orca"])
 
     def test_discovery_reads_only_profile_directories(self):
         with tempfile.TemporaryDirectory() as directory:
