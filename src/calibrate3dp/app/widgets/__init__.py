@@ -1,1 +1,1 @@
-"""Reusable Dear PyGui widgets, imported only by desktop views."""
+"""Transitional widget adapters retained with the legacy workflow pages."""

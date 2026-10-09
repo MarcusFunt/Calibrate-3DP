@@ -1,1 +1,1 @@
-"""Dear PyGui pages for the local calibration workbench."""
+"""Transitional page adapters awaiting their PySide6 replacements."""

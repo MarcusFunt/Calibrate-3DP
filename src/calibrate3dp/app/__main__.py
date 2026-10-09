@@ -6,24 +6,24 @@ import argparse
 import sys
 from typing import Sequence
 
-from .window import AppShell, GuiDependencyMissingError, load_dearpygui
-
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Start the Calibrate-3DP desktop application."""
+    """Start the PySide6 desktop application."""
     parser = argparse.ArgumentParser(
         prog="calibrate3dp",
         description="Open the local Calibrate-3DP calibration workbench.",
     )
-    parser.parse_args(argv)
+    _options, qt_args = parser.parse_known_args(argv)
+    if "--legacy-dpg" in qt_args:
+        parser.error("--legacy-dpg was removed; Calibrate-3DP now uses the Qt interface")
+
+    from .qt.main import QtDependencyMissingError, run
 
     try:
-        dpg = load_dearpygui()
-    except GuiDependencyMissingError as exc:
+        return run(qt_args)
+    except QtDependencyMissingError as exc:
         print(f"calibrate3dp: {exc}", file=sys.stderr)
         return 2
-
-    return AppShell(dpg_module=dpg).run()
 
 
 if __name__ == "__main__":

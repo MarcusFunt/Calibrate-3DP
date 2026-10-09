@@ -4,11 +4,11 @@ Calibrate-3DP is a local desktop workbench for structured FDM calibration using 
 
 ## Current state
 
-The current main branch is an early implementation, not V1. It contains a Python headless core and a Dear PyGui shell. It imports and resolves Orca profiles, builds a deterministic ironing flow/speed plan, records manual assessments, proposes ironing refinements, runs isolated Orca CLI jobs, saves session artifacts and manifests, and supports reviewed profile export.
+The current checkout is an early implementation, not V1. It contains a Python headless core and the first PySide6 application shell. The Qt shell follows the supplied printer chooser mockup and has routes for Printer Library, Printer Workspace, New Calibration, Runs / History, and Settings. The library currently uses a typed service boundary and empty state; persistent saved printers and profile intake are not connected yet. The other routes are initial placeholders. The Dear PyGui application shell and dependency have been removed; its older page adapters remain as transitional code while their workflows are ported to Qt.
 
-The current ironing path creates one simple STL and one separate Orca job per candidate. It has no multi-sample plate compiler, printed six-character plate code, compact sample labels, generic calibration dependency graph, complete V1 calibration catalog, printer calibration history model, or PySide6 interface. Multi-object 3MF overrides are unverified. The V1 goal and implementation plan describe intended work; they do not describe shipped code.
+The current ironing path creates one simple STL and one separate Orca job per candidate. It has no multi-sample plate compiler, printed six-character plate code, compact sample labels, generic calibration dependency graph, complete V1 calibration catalog, or persistent printer calibration history. Multi-object 3MF overrides are unverified. The V1 goal and implementation plan describe intended work; they do not describe shipped code.
 
-The latest repository status record reports 137 headless tests passing and one opt-in Orca integration test skipped. It records a successful nine-candidate Windows spike on 2026-10-08, plus a later CLI probe failure before slicing on 2026-10-09. These are recorded results, not tests rerun for this documentation update.
+The latest full local test run is recorded in docs/PROGRESS_HISTORY.md. Qt smoke tests require the optional PySide6 dependency and run with the offscreen Qt platform; they are skipped when that dependency is absent. The installed-Orca integration test remains opt-in.
 
 ## V1 scope
 
@@ -27,14 +27,16 @@ V1 has no camera workflow, automatic measurements, computer vision, automatic sc
 - docs/orca-cli-spike-windows-2026-10-08.md — historical, installation-specific integration evidence.
 - docs/superpowers/plans/2026-10-08-calibrate-3dp-gui.md — archived prior Dear PyGui plan, superseded by the V1 plan.
 
-## Run the current prototype
+## Run the desktop application
 
-The current GUI still uses Dear PyGui. Install the repository's optional GUI dependencies and run:
+Install the optional GUI dependencies and start the new Qt shell with:
 
     python -m pip install -e ".[gui]"
     calibrate3dp
 
-This command starts the prototype, not the planned PySide6 V1. New headless tests can be run with:
+The Qt shell currently provides the printer chooser and page navigation; persistent profile import and the calibration workflows are still being implemented. Dear PyGui is no longer an application option.
+
+Headless and optional GUI tests can be run with:
 
     python -m unittest discover -s tests -v
 

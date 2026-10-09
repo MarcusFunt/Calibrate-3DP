@@ -1,4 +1,4 @@
-"""UI-facing session models, independent of Dear PyGui."""
+"""UI-facing session models, independent of the desktop framework."""
 
 from __future__ import annotations
 

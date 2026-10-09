@@ -35,7 +35,7 @@
 
 ## Existing foundation
 
-At origin/main commit 5ef7c4cf04a9b5da84bb570c9276cca98d1427d9, the repository already has profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell.
+At origin/main commit 5ef7c4cf04a9b5da84bb570c9276cca98d1427d9, the repository already had profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. The shell has since been removed; some page adapters remain temporarily for workflow behavior and regression coverage while Qt replacements are built.
 
 The implementation has one active experiment planner: ironing flow × speed. Coupons are identical 30 × 30 × 4 mm boxes generated as separate STLs. Candidate plates are sliced independently. The application does not yet have a generic calibration catalog, dependency graph, sample-per-plate compiler, plate code, full V1 module set, printer history model, or PySide6 UI. docs/IMPLEMENTATION_STATUS.md is the current inventory.
 
@@ -131,12 +131,12 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - MainWindow receives typed service interfaces; widgets do not open SQLite or invoke Orca directly.
 - Navigation pages: Printer Library, Printer Workspace, New Calibration, Runs/History, and Settings.
 
-- [ ] Add PySide6 to the optional GUI dependency group and retain headless imports without PySide6.
+- [x] Add PySide6 to the optional GUI dependency group and retain headless imports without PySide6.
 - [ ] Implement a clean Qt shell with application startup, navigation, empty/loading/error states, and keyboard focus visibility.
 - [ ] Add an offscreen Qt smoke test for application startup and page navigation.
-- [ ] Show saved printer entries from a fake repository in a view-model test.
-- [ ] Keep the existing Dear PyGui entry point only as a temporary migration path; remove it after Qt reaches the V1 feature gate.
-- [ ] Verify that a headless import and all non-GUI tests pass when the GUI extra is not installed.
+- [x] Show saved printer entries from a fake repository in a view-model test.
+- [x] Remove the Dear PyGui application entry point and dependency at the user's direction; keep remaining page adapters unreachable from the supported Qt entry point until their workflows are ported.
+- [x] Verify that a headless import and all non-GUI tests pass when the GUI extra is not installed.
 
 ### Task 3: Make profile intake a saved printer/material library
 

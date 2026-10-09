@@ -11,7 +11,7 @@
 ## Product boundaries
 
 - V1 has no camera workflow, automatic measurements, computer vision, automatic scoring, printer control, cloud service, or firmware writes.
-- Use PySide6/Qt for the target desktop application. The current Dear PyGui UI is a prototype and must not be described as the V1 UI.
+- Use PySide6/Qt for the desktop application. The Dear PyGui application shell has been removed; its remaining page adapters are transitional and must not be exposed as a supported UI or described as the V1 UI.
 - Use OrcaSlicer as the final slicer. Do not mutate source Orca profiles or activate exported profiles automatically.
 - V1 assessments are entered by the user. Preserve uncertain, incomplete, tied, rejected, and accepted results explicitly.
 - Every physical plate receives a unique six-character code. Every sample is labeled and mapped to exact candidate settings in saved records.
