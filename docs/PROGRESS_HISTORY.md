@@ -52,3 +52,18 @@ If no experiment or test was run, state that explicitly. Distinguish a result re
 - Assumptions: The user asked to evaluate this architecture as a suggestion only. The document must not be interpreted as approval of the proposed schema, backend, DB/artifact split, import/export behavior, or tab names.
 - Deviations / blockers: The multi-sample Orca override spike and desktop packaging check are still required before selecting a geometry path.
 - Follow-up: Execute implementation plan preflight design gate as a decision/prototype gate, report evidence and recommendation, and update the goal/plan only after the design is accepted.
+
+## 2026-10-09 — Reject export drafts after Orca version changes
+
+- Agent / environment: Codex desktop; Windows PowerShell; Python unittest suite.
+- Repository baseline: origin/main and local main at cddc5a7860fd50e8f49fb66b15a07264559d9295.
+- Plan task IDs: Task 13 follow-up (reviewed profile export freshness).
+- Changes made: ExportService now rejects a draft when the current Orca version differs from the version captured in that draft. ExportPage clears a stale draft and displays the rebuild error. Added service-boundary and page-level regression tests.
+- Implementation rationale: The draft version is copied into export guidance and the manifest. Writing after the configured Orca version changes could therefore produce stale user instructions and metadata. Rejecting before file creation keeps the reviewed draft and emitted evidence consistent.
+- Experiments and commands: `python -m unittest discover -s tests -p test_export_ui.py -v` first failed both new stale-version cases against the old implementation, as expected; rerun after the fix passed all 10 export tests. Then ran `python -m unittest discover -s tests -v`.
+- Results and artifacts: Full suite passed: 139 tests passed; one opt-in Orca integration test skipped because `ORCA_SLICER_EXE` and `ORCA_PROFILE_ROOT` were not set.
+- Tests and exact outcomes: `python -m unittest discover -s tests -p test_export_ui.py -v` — 10 passed. `python -m unittest discover -s tests -v` — 139 passed, 1 skipped.
+- Additional verification: A follow-up recovery-flow assertion first found the cleared-draft source label still told the user to accept a result. Updated it to prompt rebuilding the review draft; the focused suite and final full suite then passed.
+- Assumptions: A changed or newly unavailable Orca version invalidates a draft even when the generated profile values are unchanged, because the version is part of the reviewed import guidance and export manifest.
+- Deviations / blockers: No real-Orca integration was run; the opt-in test was skipped due to missing environment configuration. Both existing stash entries were left untouched.
+- Follow-up: Rebuild and review the export draft after Orca setup changes before writing export files.

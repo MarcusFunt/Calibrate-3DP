@@ -11,6 +11,7 @@ from calibrate3dp.app.services.export_service import (
     ExportResult,
     ExportService,
     ExportServiceError,
+    StaleExportDraftError,
 )
 
 
@@ -87,6 +88,12 @@ class ExportPage:
             return None
         try:
             result = self.export_service.export(self.draft, target)
+        except StaleExportDraftError as exc:
+            self.draft = None
+            self.result = None
+            self.error = str(exc)
+            self._refresh_ui()
+            return None
         except (ExportServiceError, OSError, TypeError, ValueError) as exc:
             self.error = str(exc)
             self._refresh_ui()
@@ -192,7 +199,12 @@ class ExportPage:
             return
         self._set("export_error", self.error)
         if self.draft is None:
-            self._set("export_source", "Source profile: accept a result to prepare an export.")
+            source_message = (
+                "Source profile: build a review draft to view accepted changes."
+                if self.session is not None
+                else "Source profile: accept a result to prepare an export."
+            )
+            self._set("export_source", source_message)
             self._set("export_source_hash", "")
             self._set("export_changes", "")
             self._set("export_evidence", "")

@@ -31,6 +31,10 @@ class ExportServiceError(ValueError):
     """Raised when an export is not evidence-backed or safely writable."""
 
 
+class StaleExportDraftError(ExportServiceError):
+    """Raised when Orca setup changed after the export draft was reviewed."""
+
+
 @dataclass(frozen=True)
 class ExportDraft:
     """Immutable review data and loss-preserving profile payload."""
@@ -249,6 +253,11 @@ class ExportService:
         """Write three review artifacts to an explicitly selected JSON path."""
         if not isinstance(draft, ExportDraft):
             raise TypeError("draft must be an ExportDraft")
+        if draft.orca_version != self._current_orca_version():
+            raise StaleExportDraftError(
+                "Orca setup changed after this draft was built. "
+                "Build and review a new export draft before writing files."
+            )
         if not isinstance(destination, (str, Path)) or not str(destination).strip():
             raise ExportServiceError("choose a destination file before exporting")
         target = Path(destination).expanduser().resolve()

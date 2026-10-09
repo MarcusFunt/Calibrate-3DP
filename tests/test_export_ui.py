@@ -127,6 +127,64 @@ class ReviewedExportTests(unittest.TestCase):
             with self.assertRaises(ExportServiceError):
                 service.export(draft, None)
 
+    def test_export_rejects_draft_if_orca_version_changes_after_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session, fixture_service, _, config_root = _fixture(root)
+            version = {"value": "OrcaSlicer 2.3.0"}
+            service = ExportService(
+                fixture_service.repository,
+                protected_roots=(config_root,),
+                orca_version_provider=lambda: version["value"],
+            )
+            draft = service.build_draft(session, new_profile_name="Calibrated Process")
+            destination = root / "exports" / "calibrated.json"
+            destination.parent.mkdir()
+            version["value"] = "OrcaSlicer 2.4.0"
+
+            with self.assertRaisesRegex(ExportServiceError, "setup changed"):
+                service.export(draft, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_name("calibrated.manifest.json").exists())
+            self.assertFalse(destination.with_name("calibrated.report.md").exists())
+
+    def test_export_page_discards_stale_draft_after_orca_version_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session, fixture_service, _, config_root = _fixture(root)
+            version = {"value": "OrcaSlicer 2.3.0"}
+            service = ExportService(
+                fixture_service.repository,
+                protected_roots=(config_root,),
+                orca_version_provider=lambda: version["value"],
+            )
+            dpg = FakeDpg()
+            page = ExportPage(dpg, service)
+            page.set_session(session)
+            page.render()
+            self.assertIsNotNone(page.build_draft("Calibrated Process"))
+            destination = root / "exports" / "calibrated.json"
+            destination.parent.mkdir()
+            version["value"] = "OrcaSlicer 2.4.0"
+
+            result = page.write_to_destination(destination)
+
+            self.assertIsNone(result)
+            self.assertIsNone(page.draft)
+            self.assertIn("setup changed", page.error)
+            self.assertFalse(destination.exists())
+            self.assertIn("build a review draft", dpg.get_value("export_source").lower())
+
+            current_draft = page.build_draft("Calibrated Process")
+            self.assertEqual(current_draft.orca_version, "OrcaSlicer 2.4.0")
+            current_destination = root / "exports" / "calibrated-current.json"
+            current_result = page.write_to_destination(current_destination)
+
+            self.assertIsNotNone(current_result)
+            manifest = json.loads(current_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["orca_version"], "OrcaSlicer 2.4.0")
+
     def test_manifest_and_report_include_evidence_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
