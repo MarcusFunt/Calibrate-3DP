@@ -133,13 +133,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - SQLite stores the session index and versioned JSON payloads. Large G-code, 3MF, and image files stay in per-session folders; database values use relative paths.
 - Session IDs are generated once and remain stable across every resume and refinement.
 
-- [ ] Write tests test_session_round_trip_restores_profiles_plan_and_results, test_save_updates_timestamp_atomically, test_list_recent_is_ordered_and_limited, test_unknown_session_has_clear_error, and test_artifact_paths_must_stay_inside_session_root.
-- [ ] Run the session-store test file and verify each test fails for the missing repository behavior.
-- [ ] Implement schema version 1 migration and SessionRepository CRUD operations using sqlite3 transactions.
-- [ ] Implement SessionService operations; serialize ExperimentPlan and ExperimentResults with their existing to_dict/from_dict APIs and validate results against the loaded plan.
-- [ ] Store per-session profile JSON snapshots and generated artifacts outside SQLite; calculate and save source-profile hashes at selection time.
-- [ ] Run the session-store tests plus the existing profile and experiment unit tests.
-- [ ] Commit as feat: persist calibration sessions.
+- [x] Write tests test_session_round_trip_restores_profiles_plan_and_results, test_save_updates_timestamp_atomically, test_list_recent_is_ordered_and_limited, test_unknown_session_has_clear_error, and test_artifact_paths_must_stay_inside_session_root.
+- [x] Run the session-store test file and verify each test fails for the missing repository behavior.
+- [x] Implement schema version 1 migration and SessionRepository CRUD operations using sqlite3 transactions.
+- [x] Implement SessionService operations; serialize ExperimentPlan and ExperimentResults with their existing to_dict/from_dict APIs and validate results against the loaded plan.
+- [x] Store per-session profile JSON snapshots and generated artifacts outside SQLite; calculate and save source-profile hashes at selection time.
+- [x] Run the session-store tests plus the existing profile and experiment unit tests.
+- [x] Commit as feat: persist calibration sessions.
 
 ## Task 3: Build Orca Setup, Profile Import, and Profile Selection
 
