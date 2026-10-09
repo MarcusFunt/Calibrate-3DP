@@ -110,10 +110,12 @@ class GenerationPage:
 
     @property
     def recovery_available(self) -> bool:
-        return self.state is GenerationState.FAILED
+        return self.state is GenerationState.FAILED or self.preview_error is not None
 
     @property
     def recovery_message(self) -> str:
+        if self.preview_error:
+            return "Review the Orca executable and recheck setup to refresh the generation preview."
         if not self.recovery_available:
             return ""
         return "Review Orca setup and the saved logs, then start a fresh run. Partial outputs remain invalid."
@@ -179,6 +181,15 @@ class GenerationPage:
                 break
         if self._rendered:
             self._update_ui()
+
+    def refresh_preview(self) -> bool:
+        """Retry the CLI capability gate after Orca setup changes."""
+        if self.session is None or self.plan is None or self.profiles is None:
+            return False
+        if self.state in _ACTIVE_STATES:
+            return False
+        self.set_context(session=self.session, plan=self.plan, profiles=self.profiles)
+        return self.preview is not None and self.preview_error is None
 
     def render(self) -> None:
         """Create all generation controls; callbacks only run on Dear PyGui's UI loop."""

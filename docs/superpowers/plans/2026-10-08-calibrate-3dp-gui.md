@@ -300,7 +300,7 @@ The concrete types may add fields needed by the implementation, but they must re
 - [x] Add Ctrl+1–4 page navigation, a visible keyboard focus highlight, and explicit control labels.
 - [ ] Verify keyboard traversal with assistive tools, scaling at 100/150/200 percent, and native file dialogs on Windows and Linux.
 - [x] Run `PYTHONPATH=src python -m unittest discover -s tests -v` (headless suite).
-- [x] Confirm the suite passes in an environment without the GUI extra installed (131 passed; one opt-in Orca integration test skipped).
+- [x] Confirm the suite passes in an environment without the GUI extra installed (137 passed; one opt-in Orca integration test skipped).
 - [ ] Run the acceptance workflow with an actual supported Orca version: import three profiles, generate and validate a 3x3 ironing run, resume after closing, record results, complete refinement and confirmation, and export a new process profile.
 - [x] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
 - [x] Commit as feat: complete calibration workbench GUI.
