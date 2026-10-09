@@ -59,7 +59,17 @@ class SavingFakeGeneration:
         repository.create_run(run)
         return repository.finalize_run(
             run.run_id, status="settings_validated", artifacts=(),
-            validation={"state": "sample_settings_validated", "messages": [], "print_ready": False},
+            validation={
+                "state": "sample_settings_validated",
+                "messages": [],
+                "geometry": {"valid": True, "physical_labels_in_mesh": True, "physical_plate_code_in_mesh": True, "object_count": 10},
+                "print_ready": False,
+                "print_readiness_reasons": [
+                    "Physical readability and handling are not yet accepted.",
+                    "Every emitted G-code movement is not checked against keep-outs.",
+                    "Start/end code and temperature commands have not been validated.",
+                ],
+            },
         )
 
 
@@ -133,7 +143,12 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         QTimer.singleShot(5000, completed.quit)
         window.workspace_page.generate_button.click()
         completed.exec()
-        self.assertIn("not passed print-readiness checks", window.workspace_page.state.text())
+        self.assertIn("Print-ready: no", window.workspace_page.state.text())
+        self.assertIn("Geometry: validated", window.workspace_page.state.text())
+        self.assertIn("A–I labels and plate code are in the mesh", window.workspace_page.state.text())
+        self.assertIn("Physical readability and handling are not yet accepted.", window.workspace_page.state.text())
+        self.assertIn("Every emitted G-code movement is not checked against keep-outs.", window.workspace_page.state.text())
+        self.assertIn("Start/end code and temperature commands have not been validated.", window.workspace_page.state.text())
         self.assertEqual(window.history_page.table.rowCount(), 1)
 
         run = self.repository.list_runs()[0]
@@ -142,6 +157,8 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         window.history_page._lookup()
         self.assertIn(f"Plate {run.plate_code}", window.history_page.lookup_result.toPlainText())
         self.assertIn("Sample-A", window.history_page.lookup_result.toPlainText())
+        self.assertIn("Remaining print-readiness checks", window.history_page.lookup_result.toPlainText())
+        self.assertIn("Start/end code and temperature commands have not been validated.", window.history_page.lookup_result.toPlainText())
 
 
 if __name__ == "__main__":

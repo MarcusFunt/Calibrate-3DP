@@ -16,12 +16,17 @@ from calibrate3dp.app.models import ProfileSelection
 from calibrate3dp.app.services.experiment_service import ExperimentService, ExperimentServiceError
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.domain.records import ArtifactRecord, CalibrationRunRecord, utc_now
+from calibrate3dp.geometry.layout import PlateLayoutError, PlateLayoutRequest, PlateSampleRequest
+from calibrate3dp.geometry.specimens import PlateGeometry, PlateGeometryBackend
 from calibrate3dp.grouped_plate import (
-    require_grouped_plate_fits_machine,
+    machine_keep_out_polygons,
+    machine_printable_polygon,
+    require_plate_geometry_fits_machine,
     validate_grouped_ironing_gcode,
-    write_grouped_plate_3mf,
+    validate_grouped_plate_layout_gcode,
+    write_plate_geometry_3mf,
 )
-from calibrate3dp.orca_cli import OrcaCli, OrcaCliError
+from calibrate3dp.orca_cli import OrcaCli, OrcaCliError, reconcile_orca_identity
 from calibrate3dp.orca_profiles import OrcaProfileAdapter
 from calibrate3dp.profiles import ResolvedProfile
 from calibrate3dp.storage.library_store import LibraryRepository
@@ -32,11 +37,11 @@ class GroupedOrcaGenerationError(RuntimeError):
 
 
 class GroupedOrcaGenerationService:
-    """Create versioned grouped runs, keeping profiles and files as separate layers.
+    """Create connected, versioned grouped runs and slice through Orca.
 
     A ``settings_validated`` record only means per-sample ironing flow and speed
-    were observed in the expected object toolpaths. The first coupon geometry has
-    no physical code or sample labels and is not marked ready to print.
+    were observed in the expected object toolpaths. It does not mean the plate
+    has passed physical handling or full G-code safety checks.
     """
 
     def __init__(
@@ -83,12 +88,20 @@ class GroupedOrcaGenerationService:
 
         run_id = f"run-{uuid4().hex}"
         plate_code = self.repository.allocate_plate_code()
+        geometry: PlateGeometry | None = None
+        geometry_error: str | None = None
+        try:
+            geometry = PlateGeometryBackend().build(_geometry_request(plan, plate_code, selection.printer.settings))
+            require_plate_geometry_fits_machine(geometry, selection.printer.settings)
+        except (GroupedOrcaGenerationError, PlateLayoutError, ValueError) as exc:
+            geometry_error = str(exc)
         sample_map = tuple(
             {
                 "label": f"Sample-{label}",
                 "candidate_id": candidate.candidate_id,
                 "settings": dict(candidate.overrides),
-                "physical_label_present": False,
+                "physical_label_present": geometry is not None,
+                "physical_plate_code_present": geometry is not None,
             }
             for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=False)
         )
@@ -102,16 +115,22 @@ class GroupedOrcaGenerationService:
             plan=plan,
             profiles=selection,
             sample_map=sample_map,
-            validation={"state": "pending", "print_ready": False},
+            validation={
+                "state": "pending",
+                "geometry": _geometry_validation(geometry) if geometry is not None else {"valid": False, "messages": [geometry_error or "Geometry was not built."]},
+                "print_ready": False,
+            },
         )
         self.repository.create_run(run)
         run_root = self.repository.runs_root / run_id
+        if geometry_error is not None or geometry is None:
+            return self._finalize_failure(run, run_root, f"Connected plate geometry could not be generated: {geometry_error or 'unknown geometry error'}")
         try:
-            return self._generate(run, run_root, cancel_event=cancel_event)
+            return self._generate(run, run_root, geometry=geometry, cancel_event=cancel_event)
         except Exception as exc:
             return self._finalize_failure(run, run_root, str(exc))
 
-    def _generate(self, run: CalibrationRunRecord, run_root: Path, *, cancel_event=None) -> CalibrationRunRecord:
+    def _generate(self, run: CalibrationRunRecord, run_root: Path, *, geometry: PlateGeometry, cancel_event=None) -> CalibrationRunRecord:
         run_root.mkdir(parents=True, exist_ok=False)
         profiles_dir = run_root / "profiles"
         output_dir = run_root / "output"
@@ -147,14 +166,63 @@ class GroupedOrcaGenerationService:
         _write_json(sample_map_path, {
             "schema_version": 1,
             "plate_code": run.plate_code,
-            "physical_labels_in_mesh": False,
+            "physical_labels_in_mesh": True,
+            "physical_plate_code_in_mesh": True,
             "samples": [dict(item) for item in run.sample_map],
         })
-        geometry_bounds = require_grouped_plate_fits_machine(
-            run.plan, run.profiles.printer.settings
-        )
-        model_path = write_grouped_plate_3mf(
-            run.plan, plate_code=run.plate_code, destination=run_root / "plate.3mf"
+        geometry_bounds = require_plate_geometry_fits_machine(geometry, run.profiles.printer.settings)
+        geometry_dir = run_root / "geometry"
+        geometry_dir.mkdir()
+        mesh_records: list[dict[str, Any]] = []
+        for obj in geometry.objects:
+            mesh_path = geometry_dir / f"{obj.name.casefold()}.stl"
+            obj.mesh.write_binary_stl(mesh_path, solid_name=obj.name)
+            mesh_records.append({
+                "name": obj.name,
+                "path": mesh_path.relative_to(run_root).as_posix(),
+                "sha256": _sha256(mesh_path),
+                "size_bytes": mesh_path.stat().st_size,
+                "vertices": len(obj.mesh.vertices),
+                "triangles": len(obj.mesh.triangles),
+                "bounds_mm": list(obj.mesh.bounds or ()),
+                "sample_label": obj.sample_label,
+                "candidate_id": obj.candidate_id,
+                "settings": dict(obj.settings),
+                "printed_marking": obj.printed_marking,
+            })
+        geometry_payload = {
+            "schema_version": 1,
+            "plate_code": run.plate_code,
+            "backend_id": geometry.backend_id,
+            "backend_version": geometry.backend_version,
+            "voxel_mm": geometry.layout.voxel_mm,
+            "physical_labels_in_mesh": True,
+            "physical_plate_code_in_mesh": True,
+            "layout_bounds_mm": _bounds_dict(geometry.layout.bounds),
+            "connectors": [
+                {
+                    "sample_label": item.sample_label,
+                    "orientation": item.orientation,
+                    "bounds_mm": [item.rectangle.min_x, item.rectangle.min_y, item.rectangle.max_x, item.rectangle.max_y],
+                    "width_mm": item.width_mm,
+                    "height_mm": item.height_mm,
+                    "contact_area_mm2": item.contact_area_mm2,
+                }
+                for item in geometry.layout.connectors
+            ],
+            "connections": [
+                {"sample_label": item.sample_label, "target_name": item.target_name, "contact_area_mm2": item.contact_area_mm2}
+                for item in geometry.connections
+            ],
+            "objects": mesh_records,
+        }
+        geometry_manifest_path = geometry_dir / "geometry.json"
+        _write_json(geometry_manifest_path, geometry_payload)
+        model_path = write_plate_geometry_3mf(
+            geometry,
+            destination=run_root / "plate.3mf",
+            module_id=run.plan.module_id,
+            plan_id=run.plan.plan_id,
         )
 
         cli = self._cli_provider()
@@ -164,6 +232,16 @@ class GroupedOrcaGenerationService:
             )
         try:
             capabilities = cli.probe(timeout_seconds=min(30, self._timeout_seconds))
+            logs_dir = run_root / "logs"
+            logs_dir.mkdir()
+            if capabilities.raw_help_output is not None:
+                (logs_dir / "orca-help.log").write_text(
+                    capabilities.raw_help_output, encoding="utf-8", newline="\n"
+                )
+            if capabilities.version_output is not None:
+                (logs_dir / "orca-version.log").write_text(
+                    capabilities.version_output, encoding="utf-8", newline="\n"
+                )
             result = cli.run_slice(
                 model_path=model_path,
                 machine_process_profiles=(profile_paths["machine"], profile_paths["process"]),
@@ -177,7 +255,7 @@ class GroupedOrcaGenerationService:
             raise GroupedOrcaGenerationError(f"Orca could not complete this run: {exc}") from exc
 
         logs_dir = run_root / "logs"
-        logs_dir.mkdir()
+        logs_dir.mkdir(exist_ok=True)
         (logs_dir / "stdout.log").write_text(result.stdout, encoding="utf-8", newline="\n")
         (logs_dir / "stderr.log").write_text(result.stderr, encoding="utf-8", newline="\n")
         if result.timed_out:
@@ -203,9 +281,17 @@ class GroupedOrcaGenerationService:
         else:
             expected = {str(item["label"]): item["settings"] for item in run.sample_map}
             proof = validate_grouped_ironing_gcode(result.gcode_files[0], expected)
+            layout_proof = validate_grouped_plate_layout_gcode(
+                result.gcode_files[0], geometry, run.profiles.printer.settings
+            )
+            messages = [*proof.messages, *layout_proof.messages]
             validation = {
-                "state": "sample_settings_validated" if proof.valid else "sample_settings_failed",
-                "messages": list(proof.messages),
+                "state": (
+                    "plate_layout_failed" if not layout_proof.valid
+                    else "sample_settings_validated" if proof.valid
+                    else "sample_settings_failed"
+                ),
+                "messages": messages,
                 "samples": {
                     label: {
                         "positive_extrusion_mm": evidence.positive_extrusion_mm,
@@ -215,21 +301,29 @@ class GroupedOrcaGenerationService:
                     }
                     for label, evidence in proof.samples.items()
                 },
+                "sliced_layout": layout_proof.to_dict(),
                 "print_ready": False,
                 "print_readiness_reasons": [
-                    "Sample names and the six-character code are recorded in metadata, but not printed on the coupons.",
-                    "Connected breakaway plate geometry and physical handling are unverified.",
-                    "Planned coupon bounds were checked, but keep-out regions and every emitted G-code movement are not checked.",
+                    "A-I sample labels and the six-character code are in the mesh; human readability after printing and physical handling are unverified.",
+                    "Breakaway links pass mesh geometry checks but have not passed a physical print or hand-tool separation review.",
+                    "The object-to-object plate layout was checked in G-code; every emitted movement is not checked against printable areas and keep-outs.",
                     "Start/end G-code, temperature commands, and hardware safety checks are not part of this gate.",
                     "CLI and generated G-code version identities are not yet reconciled into a support-matrix claim.",
                 ],
             }
-            status = "settings_validated" if proof.valid else "validation_failed"
+            status = "settings_validated" if proof.valid and layout_proof.valid else "validation_failed"
 
+        validation["geometry"] = _geometry_validation(geometry)
+        if "sliced_layout" in validation:
+            validation["geometry"]["sliced_layout"] = validation["sliced_layout"]
+            validation["geometry"]["valid"] = validation["geometry"]["valid"] and validation["sliced_layout"]["valid"]
         validation["geometry_bounds"] = {
-            "checked_against": "resolved machine printable_area or bed_size",
-            "within_bounds": True,
+            "checked_against": "resolved machine printable_area or bed_size plus explicit bed_exclude_area",
+            "within_bounds": bool(validation.get("sliced_layout", {}).get("valid", False)),
+            "source_geometry_within_bounds": True,
+            "sliced_layout_valid": validation.get("sliced_layout", {}).get("valid"),
             "bounds_mm": geometry_bounds.to_dict(),
+            "keep_out_count": len(machine_keep_out_polygons(run.profiles.printer.settings)),
         }
 
         gcode_header = None
@@ -242,10 +336,30 @@ class GroupedOrcaGenerationService:
                             break
             except OSError:
                 pass
+        identity = reconcile_orca_identity(capabilities, gcode_header)
+        identity_status = identity.status
+        identity_message = (
+            "Orca CLI and G-code labels reconcile to OrcaSlicer 2.3.0, but this binary/profile/platform entry is not yet qualified in the support matrix."
+            if identity.status == "reconciled"
+            else "CLI and generated G-code version identities remain unresolved; no support-matrix claim is made."
+        )
+        for reason_index, reason in enumerate(validation.get("print_readiness_reasons", ())):
+            if reason.startswith("CLI and generated G-code version identities") or reason.startswith(
+                "CLI and G-code version identities"
+            ):
+                validation["print_readiness_reasons"][reason_index] = identity_message
         contract = {
             "cli_version_banner": capabilities.version_banner,
             "gcode_identity": gcode_header,
-            "identity_status": "unreconciled; support not claimed",
+            "identity_status": identity_status,
+            "identity": identity.to_dict(),
+            "executable_sha256": capabilities.executable_sha256,
+            "executable_size_bytes": capabilities.executable_size_bytes,
+            "file_version": capabilities.file_version,
+            "product_version": capabilities.product_version,
+            "version_output": capabilities.version_output,
+            "version_returncode": capabilities.version_returncode,
+            "version_error": capabilities.version_error,
             "cli_options": sorted(capabilities.options),
             "argv": list(result.argv),
             "returncode": result.returncode,
@@ -253,6 +367,8 @@ class GroupedOrcaGenerationService:
             "cancelled": result.cancelled,
             "stdout_path": "logs/stdout.log",
             "stderr_path": "logs/stderr.log",
+            "help_output_path": "logs/orca-help.log" if capabilities.raw_help_output is not None else None,
+            "version_output_path": "logs/orca-version.log" if capabilities.version_output is not None else None,
             "process_profile_patch": process_patch,
             "source_profiles": {
                 "printer": _profile_identity(run.profiles.printer, run.profiles.source_hashes.get("printer")),
@@ -270,6 +386,15 @@ class GroupedOrcaGenerationService:
             "plan_path": "plan.json",
             "plan_sha256": _sha256(plan_path),
             "sample_map_path": "sample-map.json",
+            "geometry": {
+                "path": geometry_manifest_path.relative_to(run_root).as_posix(),
+                "sha256": _sha256(geometry_manifest_path),
+                "backend_id": geometry.backend_id,
+                "backend_version": geometry.backend_version,
+                "mesh_objects": mesh_records,
+                "physical_labels_in_mesh": True,
+                "physical_plate_code_in_mesh": True,
+            },
             "profiles": {role: path.relative_to(run_root).as_posix() for role, path in profile_paths.items()},
             "model": {"path": model_path.relative_to(run_root).as_posix(), "sha256": _sha256(model_path)},
             "validation": validation,
@@ -345,6 +470,7 @@ def _collect_artifacts(repository: LibraryRepository, run_root: Path) -> tuple[A
             raise GroupedOrcaGenerationError("a generated artifact escaped the workspace") from exc
         media_type = {
             ".3mf": "model/3mf",
+            ".stl": "model/stl",
             ".gcode": "text/x.gcode",
             ".json": "application/json",
             ".log": "text/plain",
@@ -359,3 +485,48 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _geometry_request(plan, plate_code: str, machine_settings: Mapping[str, Any]) -> PlateLayoutRequest:
+    if len(plan.candidates) != 9:
+        raise GroupedOrcaGenerationError("connected grouped plate generation requires exactly nine candidates")
+    return PlateLayoutRequest(
+        samples=tuple(
+            PlateSampleRequest(
+                label=label,
+                candidate_id=candidate.candidate_id,
+                settings=candidate.overrides,
+            )
+            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+        ),
+        plate_code=plate_code,
+        printable_polygon=machine_printable_polygon(machine_settings),
+        keep_outs=machine_keep_out_polygons(machine_settings),
+    )
+
+
+def _bounds_dict(bounds) -> dict[str, float]:
+    return {
+        "min_x": bounds.min_x,
+        "min_y": bounds.min_y,
+        "min_z": bounds.min_z,
+        "max_x": bounds.max_x,
+        "max_y": bounds.max_y,
+        "max_z": bounds.max_z,
+    }
+
+
+def _geometry_validation(geometry: PlateGeometry) -> dict[str, Any]:
+    report = PlateGeometryBackend().validate(geometry)
+    return {
+        "valid": report.valid,
+        "messages": list(report.messages),
+        "backend_id": geometry.backend_id,
+        "backend_version": geometry.backend_version,
+        "object_count": len(geometry.objects),
+        "sample_count": sum(obj.sample_label is not None for obj in geometry.objects),
+        "connection_count": len(geometry.connections),
+        "physical_labels_in_mesh": report.valid and all(obj.printed_marking == obj.sample_label for obj in geometry.objects if obj.sample_label is not None),
+        "physical_plate_code_in_mesh": report.valid and any(obj.sample_label is None and obj.printed_marking == geometry.layout.plate_code for obj in geometry.objects),
+        "bounds_mm": _bounds_dict(geometry.layout.bounds),
+    }

@@ -1,8 +1,7 @@
-"""Small, dependency-free 3MF plates and G-code checks for grouped ironing samples.
+"""Dependency-free 3MF packaging and G-code validation for grouped samples.
 
-This module is an Orca integration path for flat coupons, not the final V1
-connected plate geometry. Every mesh is deliberately a separate object so Orca
-can apply settings to the corresponding model-settings part.
+The module packages connected geometry as separate setting-bearing objects and
+retains the earlier independent-coupon writer for focused adapter experiments.
 """
 
 from __future__ import annotations
@@ -12,11 +11,14 @@ from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
 import re
+from types import MappingProxyType
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import Any, Mapping
 
 from calibrate3dp.experiments import ExperimentPlan
+from calibrate3dp.geometry.layout import PlateLayoutError, require_layout_fits_printable_area
+from calibrate3dp.geometry.specimens import PlateGeometry, PlateGeometryBackend
 
 
 class GroupedPlateError(ValueError):
@@ -43,6 +45,27 @@ class GroupedGcodeValidation:
 
 
 @dataclass(frozen=True)
+class GroupedPlateLayoutValidation:
+    """Whether Orca kept every object's XY layout aligned to the plate mesh."""
+
+    valid: bool
+    messages: tuple[str, ...]
+    xy_translation_mm: tuple[float, float] | None
+    object_bounds_mm: Mapping[str, tuple[float, float, float, float]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "object_bounds_mm", MappingProxyType(dict(self.object_bounds_mm)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "messages": list(self.messages),
+            "xy_translation_mm": list(self.xy_translation_mm) if self.xy_translation_mm is not None else None,
+            "object_bounds_mm": {name: list(bounds) for name, bounds in self.object_bounds_mm.items()},
+        }
+
+
+@dataclass(frozen=True)
 class PlateBounds:
     min_x: float
     min_y: float
@@ -60,6 +83,7 @@ class PlateBounds:
 _CORE_NS = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 _OBJECT_START = re.compile(r"^;\s*printing object\s+(.+?)\s+id:", re.IGNORECASE)
 _GCODE_WORD = re.compile(r"(?:^|\s)([EF])([-+]?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
+_GCODE_AXIS_WORD = re.compile(r"(?:^|\s)([EXY])([-+]?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
 _VERTICES = (
     (0, 0, 0), (30, 0, 0), (30, 30, 0), (0, 30, 0),
     (0, 0, 4), (30, 0, 4), (30, 30, 4), (0, 30, 4),
@@ -194,6 +218,139 @@ def write_grouped_plate_3mf(
     return destination_path
 
 
+def write_plate_geometry_3mf(
+    geometry: PlateGeometry,
+    *,
+    destination: str | Path,
+    module_id: str,
+    plan_id: str,
+    omitted_candidate_ids: set[str] | frozenset[str] = frozenset(),
+) -> Path:
+    """Package connected mesh objects while preserving Orca per-sample IDs.
+
+    Mesh vertices use plate coordinates and each 3MF build item has an identity
+    transform. Each sample object ID matches its model-settings object and part
+    ID; frame and connector geometry stays in a separate object without sample
+    ironing overrides.
+    """
+    if not isinstance(geometry, PlateGeometry) or not PlateGeometryBackend().validate(geometry).valid:
+        raise GroupedPlateError("connected plate geometry must pass backend validation")
+    if not isinstance(module_id, str) or not module_id.strip() or not isinstance(plan_id, str) or not plan_id.strip():
+        raise GroupedPlateError("module_id and plan_id must be non-empty strings")
+    if isinstance(omitted_candidate_ids, (str, bytes)):
+        raise GroupedPlateError("omitted_candidate_ids must be a set of candidate IDs")
+    known_ids = {obj.candidate_id for obj in geometry.objects if obj.sample_label is not None}
+    if not set(omitted_candidate_ids) <= known_ids:
+        raise GroupedPlateError("omitted_candidate_ids contains an unknown candidate")
+    destination_path = Path(destination).expanduser().resolve(strict=False)
+    if destination_path.suffix.casefold() != ".3mf":
+        raise GroupedPlateError("grouped plate destination must use the .3mf extension")
+    if destination_path.exists():
+        raise GroupedPlateError(f"grouped plate destination already exists: {destination_path}")
+
+    ET.register_namespace("", _CORE_NS)
+    model_settings = ET.Element("config")
+    build_items: list[tuple[int, str]] = []
+    manifest_samples: list[dict[str, Any]] = []
+    for object_id, obj in enumerate(geometry.objects, start=1):
+        object_config = ET.SubElement(model_settings, "object", {"id": str(object_id)})
+        ET.SubElement(object_config, "metadata", {"key": "name", "value": obj.name})
+        part = ET.SubElement(object_config, "part", {"id": str(object_id), "subtype": "normal_part"})
+        if obj.sample_label is not None:
+            applied = obj.candidate_id not in omitted_candidate_ids
+            if applied:
+                ET.SubElement(part, "metadata", {"key": "ironing_flow", "value": _flow_text(obj.settings.get("ironing_flow"))})
+                ET.SubElement(part, "metadata", {"key": "ironing_speed", "value": str(obj.settings.get("ironing_speed"))})
+            manifest_samples.append({
+                "label": obj.name,
+                "physical_label": obj.printed_marking,
+                "candidate_id": obj.candidate_id,
+                "settings": dict(obj.settings),
+                "object_id": object_id,
+                "override_written": applied,
+            })
+        build_items.append((object_id, obj.name))
+    model_settings_xml = ET.tostring(model_settings, encoding="utf-8", xml_declaration=True)
+    manifest = {
+        "schema_version": 1,
+        "module_id": module_id,
+        "plan_id": plan_id,
+        "plate_code": geometry.layout.plate_code,
+        "physical_labels_in_mesh": True,
+        "physical_plate_code_in_mesh": True,
+        "geometry": {
+            "backend_id": geometry.backend_id,
+            "backend_version": geometry.backend_version,
+            "bounds_mm": {
+                "min_x": geometry.layout.bounds.min_x,
+                "min_y": geometry.layout.bounds.min_y,
+                "min_z": geometry.layout.bounds.min_z,
+                "max_x": geometry.layout.bounds.max_x,
+                "max_y": geometry.layout.bounds.max_y,
+                "max_z": geometry.layout.bounds.max_z,
+            },
+            "object_count": len(geometry.objects),
+            "connection_count": len(geometry.connections),
+            "object_bounds_mm": {
+                obj.name: list(obj.mesh.bounds or ())
+                for obj in geometry.objects
+            },
+        },
+        "samples": manifest_samples,
+        "frame_object": next((obj.name for obj in geometry.objects if obj.sample_label is None), None),
+    }
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(destination_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
+            archive.writestr("_rels/.rels", _ROOT_RELS)
+            with archive.open("3D/3dmodel.model", "w") as stream:
+                _write_xml_stream(stream, _geometry_model_lines(geometry, build_items))
+            archive.writestr("Metadata/model_settings.config", model_settings_xml)
+            import json
+
+            archive.writestr("Metadata/calibrate3dp-run.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    except Exception:
+        destination_path.unlink(missing_ok=True)
+        raise
+    return destination_path
+
+
+def _geometry_model_lines(geometry: PlateGeometry, build_items: list[tuple[int, str]]):
+    yield '<?xml version="1.0" encoding="UTF-8"?>\n'
+    yield f'<model xmlns="{_CORE_NS}" unit="millimeter" xml:lang="en-US" version="1.0">\n<resources>\n'
+    for object_id, obj in enumerate(geometry.objects, start=1):
+        yield f'<object id="{object_id}" type="model" name="{obj.name}"><mesh><vertices>\n'
+        for point in obj.mesh.vertices:
+            yield f'<vertex x="{point.x:g}" y="{point.y:g}" z="{point.z:g}"/>\n'
+        yield '</vertices><triangles>\n'
+        for first, second, third in obj.mesh.triangles:
+            yield f'<triangle v1="{first}" v2="{second}" v3="{third}"/>\n'
+        yield '</triangles></mesh></object>\n'
+    yield '</resources><build>\n'
+    for object_id, _name in build_items:
+        yield (
+            f'<item objectid="{object_id}" '
+            'transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n'
+        )
+    yield '</build></model>\n'
+
+
+def _write_xml_stream(stream, lines) -> None:
+    chunk: list[bytes] = []
+    length = 0
+    for line in lines:
+        encoded = line.encode("utf-8")
+        chunk.append(encoded)
+        length += len(encoded)
+        if length >= 1024 * 1024:
+            stream.write(b"".join(chunk))
+            chunk.clear()
+            length = 0
+    if chunk:
+        stream.write(b"".join(chunk))
+
+
 def grouped_plate_bounds(plan: ExperimentPlan) -> PlateBounds:
     """Return the exact XY/Z extent used by the simple grouped coupon layout."""
     if not isinstance(plan, ExperimentPlan) or not 1 <= len(plan.candidates) <= 9:
@@ -235,6 +392,178 @@ def require_grouped_plate_fits_machine(plan: ExperimentPlan, machine_settings: M
                 f"grouped plate height {bounds.max_z:g} mm exceeds printable_height {height_mm:g} mm"
             )
     return bounds
+
+
+def machine_printable_polygon(machine_settings: Mapping[str, Any]) -> tuple[tuple[float, float], ...]:
+    """Return the selected Orca machine's printable XY polygon."""
+    if not isinstance(machine_settings, Mapping):
+        raise GroupedPlateError("selected machine profile has no resolved settings")
+    return _printable_polygon(machine_settings)
+
+
+def machine_keep_out_polygons(machine_settings: Mapping[str, Any]) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """Read explicit Orca bed-exclusion polygons; ignore only its 0x0 sentinel."""
+    if not isinstance(machine_settings, Mapping):
+        raise GroupedPlateError("selected machine profile has no resolved settings")
+    raw = machine_settings.get("bed_exclude_area")
+    if raw is None or raw == "" or raw == [] or raw == () or raw == ["0x0"] or raw == "0x0":
+        return ()
+    candidates: list[Any]
+    if isinstance(raw, (list, tuple)) and raw and isinstance(raw[0], (list, tuple)) and raw[0] and isinstance(raw[0][0], (list, tuple)):
+        candidates = list(raw)
+    else:
+        candidates = [raw]
+    polygons: list[tuple[tuple[float, float], ...]] = []
+    for candidate in candidates:
+        if isinstance(candidate, (list, tuple)) and len(candidate) == 1 and str(candidate[0]).strip().casefold() == "0x0":
+            continue
+        point_count = len([item for item in candidate.split(",") if item.strip()]) if isinstance(candidate, str) else len(candidate) if isinstance(candidate, (list, tuple)) else 0
+        if point_count < 3:
+            raise GroupedPlateError("machine bed_exclude_area must contain at least three points")
+        try:
+            polygon = _printable_polygon({"printable_area": candidate})
+        except GroupedPlateError as exc:
+            raise GroupedPlateError("machine bed_exclude_area has an unsupported keep-out polygon") from exc
+        if len(polygon) < 3:
+            raise GroupedPlateError("machine bed_exclude_area must contain at least three points")
+        polygons.append(polygon)
+    return tuple(polygons)
+
+
+def require_plate_geometry_fits_machine(geometry: PlateGeometry, machine_settings: Mapping[str, Any]) -> PlateBounds:
+    """Validate all plate features against this machine's bed, keep-outs, and height."""
+    if not isinstance(geometry, PlateGeometry) or not isinstance(machine_settings, Mapping):
+        raise GroupedPlateError("connected plate and resolved machine settings are required")
+    report = PlateGeometryBackend().validate(geometry)
+    if not report.valid:
+        raise GroupedPlateError("connected plate geometry is invalid: " + "; ".join(report.messages))
+    bounds = geometry.layout.bounds
+    try:
+        require_layout_fits_printable_area(
+            geometry.layout,
+            machine_printable_polygon(machine_settings),
+            machine_keep_out_polygons(machine_settings),
+        )
+    except PlateLayoutError as exc:
+        raise GroupedPlateError(str(exc)) from exc
+    height = machine_settings.get("printable_height")
+    if height is not None:
+        try:
+            height_mm = float(height[0] if isinstance(height, (list, tuple)) else height)
+        except (TypeError, ValueError, IndexError) as exc:
+            raise GroupedPlateError("machine printable_height is malformed") from exc
+        if not math.isfinite(height_mm) or height_mm <= 0 or bounds.max_z > height_mm:
+            raise GroupedPlateError(
+                f"connected plate height {bounds.max_z:g} mm exceeds or cannot be checked against printable_height {height_mm:g} mm"
+            )
+    return PlateBounds(bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y, bounds.max_z)
+
+
+def validate_grouped_plate_layout_gcode(
+    gcode: str | Path,
+    geometry: PlateGeometry,
+    machine_settings: Mapping[str, Any],
+    *,
+    xy_tolerance_mm: float = 0.8,
+) -> GroupedPlateLayoutValidation:
+    """Check that Orca preserved each mesh's placement in one shared plate layout.
+
+    Automatic object arrangement can preserve per-object settings while
+    physically separating connected mesh parts. Compare positive XY extrusion
+    bounds for every named object against the validated mesh bounds, allowing
+    only one shared XY translation for the complete plate.
+    """
+    if not isinstance(geometry, PlateGeometry) or not isinstance(machine_settings, Mapping):
+        raise GroupedPlateError("connected plate geometry and resolved machine settings are required")
+    if (
+        isinstance(xy_tolerance_mm, bool)
+        or not isinstance(xy_tolerance_mm, (int, float))
+        or not math.isfinite(xy_tolerance_mm)
+        or xy_tolerance_mm < 0
+    ):
+        raise GroupedPlateError("xy_tolerance_mm must be finite and non-negative")
+    report = PlateGeometryBackend().validate(geometry)
+    messages = list(report.messages)
+    if not report.valid:
+        return GroupedPlateLayoutValidation(False, tuple(messages), None, {})
+    if isinstance(gcode, Path):
+        try:
+            text = gcode.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise GroupedPlateError(f"G-code file could not be read: {exc}") from exc
+    elif isinstance(gcode, str):
+        text = gcode
+    else:
+        raise GroupedPlateError("gcode must be text or a Path")
+
+    boxes: dict[str, list[float]] = {}
+    current_object: str | None = None
+    for line in text.splitlines():
+        start = _OBJECT_START.match(line)
+        if start:
+            current_object = start.group(1).strip()
+            boxes.setdefault(current_object, [math.inf, math.inf, -math.inf, -math.inf])
+            continue
+        if re.match(r"^;\s*stop printing object\b", line, re.IGNORECASE):
+            current_object = None
+            continue
+        if current_object is None:
+            continue
+        command = line.partition(";")[0].lstrip()
+        if not re.match(r"^G[0-3](?:\s|$)", command, re.IGNORECASE):
+            continue
+        words = {key.upper(): float(value) for key, value in _GCODE_AXIS_WORD.findall(command)}
+        if words.get("E", 0.0) <= 0 or "X" not in words or "Y" not in words:
+            continue
+        box = boxes[current_object]
+        box[0] = min(box[0], words["X"])
+        box[1] = min(box[1], words["Y"])
+        box[2] = max(box[2], words["X"])
+        box[3] = max(box[3], words["Y"])
+
+    expected = {item.name: item.mesh.bounds for item in geometry.objects}
+    actual = {name: tuple(box) for name, box in boxes.items() if box[0] != math.inf}
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        unexpected = sorted(set(actual) - set(expected))
+        if missing:
+            messages.append("G-code has no positive XY extrusion bounds for: " + ", ".join(missing))
+        if unexpected:
+            messages.append("G-code contains unrecognized object toolpaths: " + ", ".join(unexpected))
+
+    translation: tuple[float, float] | None = None
+    frame_mesh = expected.get("Plate-Frame")
+    frame_toolpath = actual.get("Plate-Frame")
+    if frame_mesh is not None and frame_toolpath is not None:
+        raw_translation = (frame_toolpath[0] - frame_mesh[0], frame_toolpath[1] - frame_mesh[1])
+        # Orca rounds toolpath coordinates, so subtracting otherwise identical
+        # bounds can leave tiny floating-point noise in a nominal zero shift.
+        translation = tuple(0.0 if abs(value) < 1e-6 else value for value in raw_translation)
+        for name in sorted(set(expected) & set(actual)):
+            mesh_bounds = expected[name]
+            toolpath = actual[name]
+            if mesh_bounds is None:
+                messages.append(f"{name} mesh has no bounds for G-code placement validation")
+                continue
+            for axis, minimum_index, maximum_index, mesh_maximum_index, shift in (
+                ("X", 0, 2, 3, translation[0]),
+                ("Y", 1, 3, 4, translation[1]),
+            ):
+                if abs(toolpath[minimum_index] - (mesh_bounds[minimum_index] + shift)) > xy_tolerance_mm or abs(
+                    toolpath[maximum_index] - (mesh_bounds[mesh_maximum_index] + shift)
+                ) > xy_tolerance_mm:
+                    messages.append(f"{name} G-code {axis} bounds do not preserve the shared mesh layout")
+        try:
+            require_layout_fits_printable_area(
+                geometry.layout,
+                machine_printable_polygon(machine_settings),
+                machine_keep_out_polygons(machine_settings),
+                translation_mm=translation,
+            )
+        except (GroupedPlateError, PlateLayoutError) as exc:
+            messages.append("translated G-code plate layout is outside the selected machine area: " + str(exc))
+
+    return GroupedPlateLayoutValidation(not messages, tuple(messages), translation, actual)
 
 
 def validate_grouped_ironing_gcode(
@@ -290,9 +619,15 @@ def validate_grouped_ironing_gcode(
         command = line.lstrip()
         if not re.match(r"^G[0-3](?:\s|$)", command, re.IGNORECASE):
             continue
+        comment = command.partition(";")[2].strip()
         words = {key.upper(): float(value) for key, value in _GCODE_WORD.findall(command)}
         if "F" in words and words["F"] > 0:
             current_feed_mm_s = words["F"] / 60.0
+        if not re.match(r"^ironing(?:\s|$)", comment, re.IGNORECASE):
+            # Orca can emit positive-E unretracts inside a TYPE:Ironing section.
+            # Only count explicitly annotated ironing extrusion moves as flow
+            # and speed evidence; section membership alone is insufficient.
+            continue
         extrusion = words.get("E", 0.0)
         if extrusion <= 0:
             continue

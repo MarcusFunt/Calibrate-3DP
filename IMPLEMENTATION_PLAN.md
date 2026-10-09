@@ -37,7 +37,7 @@
 
 The project foundation at origin/main commit `5ef7c4cf04a9b5da84bb570c9276cca98d1427d9` included profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. Since then, the Qt shell replaced the old launch path; some page adapters remain temporarily for workflow logic and regression coverage.
 
-The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a149539eaef8`. The current feature worktree adds persistent printer/material/run records, a grouped 3MF ironing path, real-Orca G-code checks, and connected Qt profile-to-run/history workflow. This is still a single-module vertical slice: it does not yet have connected labeled specimens, a generic calibration catalog/compiler, dependency graph, full V1 module set, assessment/refinement/export integration for grouped runs, or print-readiness validation. See `docs/IMPLEMENTATION_STATUS.md` for the complete inventory.
+The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec339305147179397aba4f7`; this implementation pass is isolated in `codex/v1-design-orca-qt`. That baseline includes persistent printer/material/run records, grouped 3MF ironing, real-Orca sample-settings checks, and the Qt profile-to-run/history workflow. This worktree now adds labeled connected specimen geometry and a real-G-code check that the ten object toolpaths preserve one shared plate layout. A generic calibration catalog/compiler, dependency graph, full V1 module set, assessment/refinement/export integration for grouped runs, and complete print-readiness validation remain open. The CLI banner/G-code identity labels map to OrcaSlicer 2.3.0 by the official release's `version.inc`; exact binary/profile/platform support remains unqualified. See `docs/IMPLEMENTATION_STATUS.md` for the implementation inventory.
 
 ---
 
@@ -45,7 +45,7 @@ The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a
 
 ### Preflight design gate: Evaluate the experiment configuration and geometry proposal
 
-**Status:** Partially decided for the first grouped ironing workflow on 2026-10-09. Versioned profile/plan/sample snapshots are stored in SQLite, generated run artifacts remain in per-run folders with hashes, and a standard-library 3MF package is used for the proven object-settings path. The connected geometry backend, physical labels, full experiment compiler contract, and supported layout/version matrix remain open.
+**Status:** Partially decided for the first grouped ironing workflow on 2026-10-10. Versioned profile/plan/sample snapshots are stored in SQLite, generated run artifacts remain in per-run folders with hashes, and standard-library 3MF/voxel adapters implement object-level settings and connected specimens. After a reviewer found Orca's default auto-arrange had separated object toolpaths, the adapter now passes `--arrange 0 --orient 0` and the saved-run service verifies one shared layout in sliced G-code. The real Orca gate passes on one local executable/profile set. Physical readability/handling, the full experiment compiler contract, and the supported layout/version matrix remain open.
 
 **Files:**
 - Read/update: docs/EXPERIMENT_CONFIGURATION_PROPOSAL.md
@@ -60,10 +60,10 @@ The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a
 
 - [x] For the current printer/material and ironing-run records, use versioned JSON snapshots in SQLite and preserve existing v1 session rows during migration. A general canonical experiment-config schema and portable JSON import/export remain open.
 - [x] Keep meshes, G-code, and logs in per-run artifact folders and store relative paths, sizes, and SHA-256 values in SQLite. Keep the full current plan and sample map as structured DB data.
-- [ ] Prototype a connected 3 × 3 grid with robust hand-tool-separable links, A–I labels, and a six-character plate code in Python. Prototype build123d first; compare CadQuery if installation, geometry, or packaging evidence calls for it.
-- [ ] Verify valid geometry, exact bounds, sample separation, readable labels, connector dimensions, and repeat-generation behavior on the proposed platform matrix.
-- [x] On the installed Windows Orca/profile combination, import a three-object project, assign different flow/speed values, slice, and prove the changes reached their intended toolpaths. An omitted-override negative case is rejected. This is evidence for one installation only, not a support-matrix entry.
-- [ ] Evaluate standard 3MF packaging support separately from Orca project metadata; add lib3mf only if a reproducible packaging prototype justifies its platform/dependency cost.
+- [x] Build a connected 3 × 3 local geometry prototype with A–I bitmap marks, a six-character code, and repeated breakaway tabs. The measured build123d 0.13.0 environment occupied 721,973,890 bytes in `Lib/site-packages`, so the bounded model uses the standard-library voxel backend; CadQuery was not installed because its declared dependency set is broader and this geometry does not need general BREP operations.
+- [x] Verify local mesh closure, exact bounds, object mappings, keep-outs, connector dimensions, and repeat-generation behavior. Physical mark readability/handling and the broader supported-platform matrix remain open.
+- [x] On the installed Windows Orca/profile combination, import the ten-object connected project, preserve nine sample-to-object/part mappings, slice with automatic arrangement disabled, and prove all ten named object toolpaths retain one shared XY layout and all nine flow/speed values reach their toolpaths. An omitted-override negative case is rejected. This is evidence for one installation only, not a support-matrix entry.
+- [x] Evaluate standard 3MF packaging support separately from Orca project metadata; the first-party writer now emits connected triangle meshes and preserves nine per-sample object/part IDs without adding lib3mf. The real Orca round-trip is tracked separately below.
 - [x] Record the bounded evidence, scoped decision, alternatives, and user impact in docs/PROGRESS_HISTORY.md and update this plan/status. Keep the remaining architecture choices open until their gates are complete.
 
 **Verification:** The prototype emits the same normalized sample order, settings, layout, and expected geometry for identical versioned inputs; the Orca integration check demonstrates or blocks independent sample settings in G-code; packaging installs and runs on each claimed platform. A documentation review or mock test alone does not close this gate.
@@ -80,15 +80,15 @@ The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a
 - Consumes: current ProfileCatalog, OrcaProfileAdapter, OrcaCli, and installed Orca profiles.
 - Produces: a recorded capability result by Orca version and profile family.
 
-- [x] Build a project with at least three separate sample objects in one 3MF layout using different ironing settings. (Connected/adjacent specimen geometry remains a separate geometry gate.)
+- [x] Build a connected project with nine separate sample objects plus a separate frame in one 3MF layout using different ironing settings.
 - [x] Slice with the exact installed Orca binary, isolated data directory, and resolved printer/filament/process profiles.
 - [x] Parse the output and prove each object's requested flow/speed settings affect its toolpath. Include a negative fixture where an override is intentionally absent.
-- [x] Check planned coupon bounds against the machine printable area and retain output hashes and both version identities.
-- [ ] Validate every emitted movement, start/end code, and temperature commands; reconcile the CLI banner and G-code identity before making a support claim.
+- [x] Check connected plate bounds/explicit bed keep-outs against resolved machine geometry; retain project, mesh, G-code hashes, and both Orca identity labels.
+- [ ] Validate every emitted movement, start/end code, and temperature command. The observed CLI/G-code labels map to OrcaSlicer 2.3.0 by upstream source, but binary provenance and this executable/profile/platform support remain unqualified.
 - [ ] Repeat on every proposed support-matrix entry and record raw commands, logs, and artifact hashes.
 - [ ] If overrides do not work, stop the single-plate implementation and document a version-specific safe alternative. Do not silently mark one-candidate-per-plate output as the requested grouped plate workflow.
 
-**Verification:** The real-Orca integration test passes for the one tested installation, but CLI and G-code identities do not match, so the support matrix remains empty. The grouped output is validated for sample flow and speed only, not ready to print.
+**Verification:** The connected real-Orca integration test passes for the one tested Windows installation. It disables Orca arrangement and orientation, checks per-object positive-extrusion bounds against the source mesh bounds using a single shared XY translation, and checks all nine sample flow and speed values. The CLI banner and G-code header use different labels, but official v2.3.0 source maps them to the same Orca release; the local executable's provenance and profile/platform support remain unqualified, so the support matrix is still empty. The grouped output does not validate every movement, start/end code, or temperature and is not ready to print.
 
 ---
 
@@ -114,7 +114,7 @@ The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a
 - [x] Add the v1→v2 migration, foreign keys, plate-code uniqueness, and transactional run state transitions.
 - [x] Keep large files outside SQLite and record checked relative paths, media types, sizes, and SHA-256 values.
 - [ ] Test interrupted migration rollback, duplicate record IDs, missing artifact files, and recovery messages.
-- [x] Run the full current suite and new storage tests; 159 tests ran and 3 were skipped on 2026-10-09.
+- [x] Run the full current suite and new storage tests; the 2026-10-10 suite ran 184 tests, with 181 passes and 3 skips. The earlier 2026-10-09 result was 178 ran, 175 passed, and 3 skipped; the count correction is recorded in `docs/PROGRESS_HISTORY.md`.
 
 ### Task 2: Establish the PySide6 application shell early
 
@@ -237,13 +237,13 @@ The primary checkout and remote `main` are now at `c899021daa38c990bcd81466b4b9a
 - PlateCompiler.write(layout, output_dir) returns generated artifact records.
 
 - [ ] Generate unique six-character codes using an alphabet without visually ambiguous characters; enforce a database uniqueness check and collision retry.
-- [ ] Assign short labels deterministically, starting A through I for nine samples; store label-to-candidate mapping.
+- [x] Assign short labels deterministically, starting A through I for nine samples; store label-to-candidate mapping in immutable run and geometry records.
 - [ ] Generate a tiny physical code coupon and ensure the code is readable after slicing.
 - [ ] Support grouped flat grids/zones and a distinct tower strategy through the backend selected at preflight design gate. Preserve grouping when the experiment must span multiple physical plates. Preserve grouping when the experiment must span multiple physical plates.
 - [ ] Design connectors to survive accidental plate removal and handling while allowing deliberate separation with a hand tool.
-- [ ] Validate bed bounds, keep-outs, clearances, collision-free samples, minimum connector geometry, mesh validity, and deterministic output. Record geometry/backend versions and hashes.
-- [ ] Test geometry properties at minimum/maximum bed size, irregular beds, narrow margins, and full plate capacity.
-- [ ] Do not depend on a general-purpose 3MF library for Orca metadata; validate the exact package contents and adapter extension separately.
+- [x] Validate local bed bounds, explicit profile keep-outs, clearances, sample spacing, minimum connector geometry, mesh closure, deterministic output, and nine object mappings. Record geometry/backend versions and hashes in run artifacts.
+- [x] Test local geometry at exact-fit and large bed bounds, an irregular bed, a too-small bed, and full nine-sample capacity.
+- [x] Do not depend on a general-purpose 3MF library for Orca metadata; validate object/part settings mapping in the standard-library package and the exact Orca round-trip separately.
 
 ### Task 8: Implement the versioned Orca project and slicing adapter
 

@@ -8,8 +8,11 @@ from unittest.mock import patch
 
 from calibrate3dp.orca_cli import (
     OrcaCli,
+    OrcaCliCapabilities,
     OrcaCliError,
+    OrcaIdentityEvidence,
     parse_orca_help,
+    reconcile_orca_identity,
 )
 
 
@@ -64,6 +67,82 @@ class OrcaCliTests(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs["capture_output"])
         self.assertTrue(run.call_args.kwargs["text"])
 
+    def test_probe_records_executable_hash_and_raw_version_outputs(self):
+        help_text = (
+            "OrcaSlicer-01.10.01.50:\n"
+            "  --slice arg\n  --outputdir arg\n  --datadir arg\n"
+            "  --load-settings arg\n  --load-filaments arg\n  --version\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "orca-slicer.exe"
+            executable.write_bytes(b"orca binary fixture")
+            help_result = subprocess.CompletedProcess([], 0, help_text, "trace output\n")
+            version_result = subprocess.CompletedProcess([], 0, "OrcaSlicer 2.3.0\n", "")
+
+            with patch(
+                "calibrate3dp.orca_cli.subprocess.run",
+                side_effect=(help_result, version_result),
+            ) as run:
+                capabilities = OrcaCli(executable).probe()
+
+        self.assertEqual(capabilities.executable_sha256, "771b053fa3f9835f1ffcba25b9695d3a73a8ba1fa332bc468beb2c7201f73ae5")
+        self.assertEqual(capabilities.raw_help_output, help_text + "\ntrace output\n")
+        self.assertEqual(capabilities.version_output, "OrcaSlicer 2.3.0\n")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0], [str(executable), "--version"])
+
+    def test_reconciles_known_official_orca_release_identity_without_claiming_support(self):
+        capabilities = OrcaCliCapabilities(
+            executable=Path("orca-slicer.exe"),
+            version_banner="OrcaSlicer-01.10.01.50:",
+            options=frozenset(),
+            help_returncode=0,
+            executable_sha256="a" * 64,
+        )
+
+        identity = reconcile_orca_identity(capabilities, "OrcaSlicer 2.3.0")
+
+        self.assertIsInstance(identity, OrcaIdentityEvidence)
+        self.assertEqual(identity.status, "reconciled")
+        self.assertEqual(identity.release_version, "2.3.0")
+        self.assertEqual(identity.source_url, "https://github.com/SoftFever/OrcaSlicer/blob/v2.3.0/version.inc")
+        self.assertFalse(identity.support_claim)
+
+    def test_unknown_or_incomplete_orca_identity_remains_unresolved(self):
+        base = OrcaCliCapabilities(
+            executable=Path("orca-slicer.exe"),
+            version_banner="OrcaSlicer-99.99.99.99:",
+            options=frozenset(),
+            help_returncode=0,
+            executable_sha256="a" * 64,
+        )
+
+        unknown = reconcile_orca_identity(base, "OrcaSlicer 9.9.9")
+        missing_fingerprint = reconcile_orca_identity(
+            OrcaCliCapabilities(Path("orca-slicer.exe"), "OrcaSlicer-01.10.01.50:", frozenset(), 0),
+            "OrcaSlicer 2.3.0",
+        )
+
+        self.assertEqual(unknown.status, "unresolved")
+        self.assertEqual(missing_fingerprint.status, "unresolved")
+        self.assertFalse(unknown.support_claim)
+        self.assertFalse(missing_fingerprint.support_claim)
+
+    def test_conflicting_executable_product_version_overrides_known_banner_pair(self):
+        capabilities = OrcaCliCapabilities(
+            executable=Path("orca-slicer.exe"),
+            version_banner="OrcaSlicer-01.10.01.50:",
+            options=frozenset(),
+            help_returncode=0,
+            executable_sha256="a" * 64,
+            product_version="2.3.1",
+        )
+
+        identity = reconcile_orca_identity(capabilities, "OrcaSlicer 2.3.0")
+
+        self.assertEqual(identity.status, "unresolved")
+        self.assertIn("product version", identity.explanation.casefold())
+
     def test_builds_shell_free_slice_argv_and_requires_empty_isolated_dirs(self):
         api = __import__("calibrate3dp.orca_cli", fromlist=["OrcaCli"])
         with tempfile.TemporaryDirectory() as directory:
@@ -90,6 +169,8 @@ class OrcaCliTests(unittest.TestCase):
 
             self.assertEqual(argv[0], str(root / "orca-slicer.exe"))
             self.assertEqual(argv[1:3], ("--slice", "0"))
+            self.assertEqual(argv[argv.index("--arrange") + 1], "0")
+            self.assertEqual(argv[argv.index("--orient") + 1], "0")
             self.assertEqual(argv[argv.index("--load-settings") + 1], f"{machine};{process}")
             self.assertEqual(argv[argv.index("--load-filaments") + 1], str(filament))
             self.assertEqual(argv[-1], str(model))

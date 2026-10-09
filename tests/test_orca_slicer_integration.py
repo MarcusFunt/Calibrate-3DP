@@ -12,11 +12,20 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+import zipfile
 
+from calibrate3dp.geometry.layout import PlateLayoutRequest, PlateSampleRequest
+from calibrate3dp.geometry.specimens import PlateGeometryBackend
+from calibrate3dp.grouped_plate import (
+    machine_keep_out_polygons,
+    machine_printable_polygon,
+    validate_grouped_ironing_gcode,
+    validate_grouped_plate_layout_gcode,
+    write_plate_geometry_3mf,
+)
 from calibrate3dp.ironing import create_initial_ironing_experiment
-from calibrate3dp.experiments import ExperimentCandidate, ExperimentPlan, SweepDimension
-from calibrate3dp.grouped_plate import validate_grouped_ironing_gcode, write_grouped_plate_3mf
-from calibrate3dp.orca_cli import OrcaCli
+from calibrate3dp.orca_cli import OrcaCli, reconcile_orca_identity
 from calibrate3dp.orca_jobs import slice_ironing_experiment
 from calibrate3dp.orca_profiles import OrcaProfileAdapter
 from calibrate3dp.profiles import ProfileCatalog, ProfileDocument
@@ -149,30 +158,49 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
         machine_cli["name"] = machine.profile.name
         machine_cli["type"] = machine.profile.kind
         filament_cli = adapter.to_cli_profile(filament, name=filament.profile.name + " [Calibrate3DP grouped gate]")
-        plan = ExperimentPlan(
+        baseline = dict(process.settings)
+        baseline.update({"ironing_type": "top", "ironing_flow": "5%", "ironing_speed": "5"})
+        plan = create_initial_ironing_experiment(
             plan_id="orca-grouped-settings-gate",
-            module_id="ironing",
-            baseline_settings={"ironing_type": "top", "ironing_flow": "5%", "ironing_speed": "5"},
-            dimensions=(
-                SweepDimension("ironing_flow", ("12%", "15%", "18%"), "Ironing flow"),
-                SweepDimension("ironing_speed", (10, 15, 20), "Ironing speed"),
-            ),
-            candidates=tuple(
-                ExperimentCandidate(
-                    f"candidate-{label.lower()}",
-                    {"ironing_flow": flow, "ironing_speed": speed},
-                )
-                for label, flow, speed in zip("ABC", ("12%", "15%", "18%"), (10, 15, 20), strict=True)
-            ),
+            baseline_settings=baseline,
+            flow_values=(12, 15, 18),
+            speed_values=(10, 15, 20),
         )
         expected = {
             f"Sample-{label}": candidate.overrides
-            for label, candidate in zip("ABC", plan.candidates, strict=True)
+            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
         }
         exe = os.environ["ORCA_SLICER_EXE"]
         cli = OrcaCli(exe)
         capabilities = cli.probe(timeout_seconds=30)
         with _integration_root("grouped-settings-gate") as root:
+            geometry = PlateGeometryBackend().build(PlateLayoutRequest(
+                samples=tuple(
+                    PlateSampleRequest(label, candidate.candidate_id, candidate.overrides)
+                    for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+                ),
+                plate_code="7K3P9D",
+                printable_polygon=machine_printable_polygon(machine.settings),
+                keep_outs=machine_keep_out_polygons(machine.settings),
+            ))
+            self.assertTrue(PlateGeometryBackend().validate(geometry).valid)
+            mesh_dir = root / "geometry-meshes"
+            mesh_dir.mkdir()
+            mesh_records = []
+            for obj in geometry.objects:
+                mesh = obj.mesh.write_binary_stl(mesh_dir / f"{obj.name.casefold()}.stl", solid_name=obj.name)
+                mesh_records.append({
+                    "name": obj.name,
+                    "path": str(mesh),
+                    "sha256": _sha256(mesh),
+                    "size_bytes": mesh.stat().st_size,
+                    "vertices": len(obj.mesh.vertices),
+                    "triangles": len(obj.mesh.triangles),
+                    "bounds_mm": list(obj.mesh.bounds or ()),
+                    "candidate_id": obj.candidate_id,
+                    "printed_marking": obj.printed_marking,
+                    "settings": dict(obj.settings),
+                })
             profiles = root / "profiles"
             profiles.mkdir()
             paths = {}
@@ -181,10 +209,11 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 paths[name].write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
             def slice_plate(stem: str, *, omit: set[str] | None = None):
-                project = write_grouped_plate_3mf(
-                    plan,
-                    plate_code="7K3P9D",
+                project = write_plate_geometry_3mf(
+                    geometry,
                     destination=root / f"{stem}.3mf",
+                    module_id=plan.module_id,
+                    plan_id=plan.plan_id,
                     omitted_candidate_ids=omit or set(),
                 )
                 output, data = root / f"{stem}-output", root / f"{stem}-data"
@@ -208,7 +237,23 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 (logs / "stderr.log").write_text(result.stderr, encoding="utf-8")
                 return project, result
 
-            def record_evidence(stem: str, project: Path, result, validation) -> None:
+            positive_project, positive = slice_plate("grouped-positive")
+            with zipfile.ZipFile(positive_project) as archive:
+                model = ET.fromstring(archive.read("3D/3dmodel.model"))
+                config = ET.fromstring(archive.read("Metadata/model_settings.config"))
+            objects = model.findall(".//{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}resources/{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}object")
+            object_ids = {obj.attrib["name"]: obj.attrib["id"] for obj in objects}
+            self.assertEqual(len(objects), 10)
+            self.assertIn("Plate-Frame", object_ids)
+            config_by_id = {obj.attrib["id"]: obj for obj in config.findall("object")}
+            for label in "ABCDEFGHI":
+                object_id = object_ids[f"Sample-{label}"]
+                part = config_by_id[object_id].find("part")
+                self.assertEqual(part.attrib["id"], object_id)
+            frame_part = config_by_id[object_ids["Plate-Frame"]].find("part")
+            self.assertEqual(frame_part.findall("metadata"), [])
+
+            def record_evidence(stem: str, project: Path, result, validation, layout_validation) -> None:
                 gcode = result.gcode_files[0]
                 header = next(
                     (line.strip().removeprefix("; generated by ") for line in gcode.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("; generated by ")),
@@ -217,6 +262,8 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 payload = {
                     "schema_version": 1,
                     "executable": str(Path(exe).resolve()),
+                    "executable_sha256": capabilities.executable_sha256,
+                    "executable_size_bytes": capabilities.executable_size_bytes,
                     "cli_version_banner": capabilities.version_banner,
                     "gcode_identity": header,
                     "profile_sources": {
@@ -227,6 +274,26 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                         name: {"path": str(path), "sha256": _sha256(path)} for name, path in paths.items()
                     },
                     "input_3mf": {"path": str(project), "sha256": _sha256(project)},
+                    "geometry": {
+                        "backend_id": geometry.backend_id,
+                        "backend_version": geometry.backend_version,
+                        "bounds_mm": {
+                            "min_x": geometry.layout.bounds.min_x,
+                            "min_y": geometry.layout.bounds.min_y,
+                            "min_z": geometry.layout.bounds.min_z,
+                            "max_x": geometry.layout.bounds.max_x,
+                            "max_y": geometry.layout.bounds.max_y,
+                            "max_z": geometry.layout.bounds.max_z,
+                        },
+                        "connections": [
+                            {"sample_label": item.sample_label, "target_name": item.target_name, "contact_area_mm2": item.contact_area_mm2}
+                            for item in geometry.connections
+                        ],
+                        "sliced_layout_validation": layout_validation.to_dict(),
+                        "physical_labels_in_mesh": True,
+                        "physical_plate_code_in_mesh": True,
+                        "mesh_objects": mesh_records,
+                    },
                     "argv": list(result.argv),
                     "returncode": result.returncode,
                     "timed_out": result.timed_out,
@@ -234,6 +301,7 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                     "stdout_path": f"{stem}-logs/stdout.log",
                     "stderr_path": f"{stem}-logs/stderr.log",
                     "gcode": {"path": str(gcode), "size_bytes": gcode.stat().st_size, "sha256": _sha256(gcode)},
+                    "gcode_identity_evidence": reconcile_orca_identity(capabilities, header).to_dict(),
                     "validation": {
                         "valid": validation.valid,
                         "messages": list(validation.messages),
@@ -250,28 +318,36 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 }
                 (root / f"{stem}-evidence.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-            positive_project, positive = slice_plate("grouped-positive")
             self.assertIsNotNone(capabilities.version_banner)
             positive_validation = validate_grouped_ironing_gcode(positive.gcode_files[0], expected)
             self.assertTrue(positive_validation.valid, positive_validation.messages)
-            record_evidence("grouped-positive", positive_project, positive, positive_validation)
+            positive_layout_validation = validate_grouped_plate_layout_gcode(
+                positive.gcode_files[0], geometry, machine.settings
+            )
+            self.assertTrue(positive_layout_validation.valid, positive_layout_validation.messages)
+            record_evidence("grouped-positive", positive_project, positive, positive_validation, positive_layout_validation)
             for sample, evidence in positive_validation.samples.items():
                 self.assertGreater(evidence.ironing_extrusion_moves, 0, sample)
                 self.assertTrue(evidence.observed_speed_mm_s, sample)
                 target_speed = float(expected[sample]["ironing_speed"])
                 self.assertEqual(evidence.observed_speed_mm_s, (target_speed,), sample)
 
-            missing_candidate = plan.candidates[1].candidate_id
+            missing_candidate = plan.candidates[4].candidate_id
             negative_project, negative = slice_plate("grouped-negative", omit={missing_candidate})
             negative_validation = validate_grouped_ironing_gcode(negative.gcode_files[0], expected)
+            negative_layout_validation = validate_grouped_plate_layout_gcode(
+                negative.gcode_files[0], geometry, machine.settings
+            )
+            self.assertTrue(negative_layout_validation.valid, negative_layout_validation.messages)
             self.assertFalse(negative_validation.valid)
-            self.assertTrue(any("Sample-B" in message for message in negative_validation.messages))
-            self.assertEqual(negative_validation.samples["Sample-B"].observed_speed_mm_s, (5.0,))
-            baseline_extrusion = negative_validation.samples["Sample-B"].positive_extrusion_mm
-            for sample, expected_flow in (("Sample-A", 12), ("Sample-B", 15), ("Sample-C", 18)):
+            self.assertTrue(any("Sample-E" in message for message in negative_validation.messages))
+            self.assertEqual(negative_validation.samples["Sample-E"].observed_speed_mm_s, (5.0,))
+            baseline_extrusion = negative_validation.samples["Sample-E"].positive_extrusion_mm
+            for sample, settings in expected.items():
+                expected_flow = float(str(settings["ironing_flow"]).removesuffix("%"))
                 observed_ratio = positive_validation.samples[sample].positive_extrusion_mm / baseline_extrusion
-                self.assertAlmostEqual(observed_ratio, expected_flow / 5, delta=0.02)
-            record_evidence("grouped-negative", negative_project, negative, negative_validation)
+                self.assertAlmostEqual(observed_ratio, expected_flow / 5, delta=0.02, msg=sample)
+            record_evidence("grouped-negative", negative_project, negative, negative_validation, negative_layout_validation)
 
 
 def _numbers(value: str) -> tuple[float, ...]:

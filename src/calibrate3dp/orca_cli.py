@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import math
+import os
 from pathlib import Path
 from queue import Empty, Queue
 import re
@@ -25,6 +27,17 @@ _REQUIRED_OPTIONS = frozenset({
     "--load-settings",
     "--load-filaments",
 })
+_KNOWN_ORCA_ENGINE_RELEASES = {
+    # OrcaSlicer v2.3.0's version.inc declares both SoftFever_VERSION=2.3.0
+    # and SLIC3R_VERSION=01.10.01.50. This explains the labels; it neither
+    # authenticates a local binary nor declares printer/profile compatibility.
+    "01.10.01.50": (
+        "2.3.0",
+        "https://github.com/SoftFever/OrcaSlicer/blob/v2.3.0/version.inc",
+    ),
+}
+_ORCA_BANNER = re.compile(r"^OrcaSlicer-(?P<version>[0-9]+(?:\.[0-9]+){3}):?$", re.IGNORECASE)
+_ORCA_RELEASE_TEXT = re.compile(r"^OrcaSlicer\s+(?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)", re.IGNORECASE)
 
 
 class OrcaCliError(RuntimeError):
@@ -37,6 +50,50 @@ class OrcaCliCapabilities:
     version_banner: str | None
     options: frozenset[str]
     help_returncode: int
+    executable_sha256: str | None = None
+    executable_size_bytes: int | None = None
+    file_version: str | None = None
+    product_version: str | None = None
+    raw_help_output: str | None = None
+    version_output: str | None = None
+    version_returncode: int | None = None
+    version_error: str | None = None
+
+
+@dataclass(frozen=True)
+class OrcaIdentityEvidence:
+    """Evidence that CLI and G-code version labels describe one Orca release."""
+
+    executable_path: str | None
+    executable_sha256: str | None
+    executable_size_bytes: int | None
+    file_version: str | None
+    product_version: str | None
+    version_banner: str | None
+    version_output: str | None
+    gcode_identity: str | None
+    release_version: str | None
+    status: str
+    explanation: str
+    source_url: str | None
+    support_claim: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "executable_path": self.executable_path,
+            "executable_sha256": self.executable_sha256,
+            "executable_size_bytes": self.executable_size_bytes,
+            "file_version": self.file_version,
+            "product_version": self.product_version,
+            "version_banner": self.version_banner,
+            "version_output": self.version_output,
+            "gcode_identity": self.gcode_identity,
+            "release_version": self.release_version,
+            "status": self.status,
+            "explanation": self.explanation,
+            "source_url": self.source_url,
+            "support_claim": self.support_claim,
+        }
 
 
 @dataclass(frozen=True)
@@ -78,6 +135,84 @@ def parse_orca_help(help_text: str, *, returncode: int = 0) -> OrcaCliCapabiliti
         version_banner=version_banner,
         options=options,
         help_returncode=returncode,
+        raw_help_output=help_text,
+    )
+
+
+def reconcile_orca_identity(
+    capabilities: OrcaCliCapabilities,
+    gcode_identity: str | None,
+) -> OrcaIdentityEvidence:
+    """Reconcile known Orca CLI-engine and G-code release labels fail-closed.
+
+    ``reconciled`` means the reported labels match a documented upstream
+    version mapping and an exact executable fingerprint was captured. It does
+    not certify binary provenance, printer compatibility, or print readiness.
+    """
+    if not isinstance(capabilities, OrcaCliCapabilities):
+        raise TypeError("capabilities must be OrcaCliCapabilities")
+
+    banner_match = _ORCA_BANNER.fullmatch(capabilities.version_banner or "")
+    gcode_match = _ORCA_RELEASE_TEXT.match((gcode_identity or "").strip())
+    engine_version = banner_match.group("version") if banner_match else None
+    gcode_version = gcode_match.group("version") if gcode_match else None
+    known = _KNOWN_ORCA_ENGINE_RELEASES.get(engine_version or "")
+    release_version, source_url = known if known is not None else (None, None)
+    explanations: list[str] = []
+
+    if not capabilities.executable_sha256:
+        explanations.append("the executable fingerprint is unavailable")
+    elif not re.fullmatch(r"[0-9a-fA-F]{64}", capabilities.executable_sha256):
+        explanations.append("the executable fingerprint is malformed")
+    if engine_version is None:
+        explanations.append("the CLI banner is missing or unrecognized")
+    elif known is None:
+        explanations.append(f"CLI engine version {engine_version} has no recorded release mapping")
+    if gcode_version is None:
+        explanations.append("the G-code identity is missing or unrecognized")
+    elif release_version is not None and gcode_version != release_version:
+        explanations.append(
+            f"the CLI engine mapping identifies {release_version}, but G-code identifies {gcode_version}"
+        )
+
+    for label, value in (
+        ("file version", capabilities.file_version),
+        ("product version", capabilities.product_version),
+        ("--version output", capabilities.version_output),
+    ):
+        if value is None or not value.strip():
+            continue
+        match = re.search(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?:\.[0-9]+)?(?![0-9])", value)
+        if match is None:
+            explanations.append(f"{label} is present but unrecognized")
+        elif release_version is None or match.group(1) != release_version:
+            explanations.append(f"{label} conflicts with the mapped release version")
+
+    reconciled = not explanations and release_version is not None
+    if reconciled:
+        explanation = (
+            f"The CLI engine label {engine_version} and G-code label {gcode_version} both map to "
+            f"OrcaSlicer {release_version} in the cited upstream version file. The executable hash "
+            "identifies this local binary; it does not authenticate its publisher or establish printer support."
+        )
+    else:
+        explanation = "; ".join(explanations) or "No documented mapping reconciles the reported identities."
+
+    executable = capabilities.executable
+    return OrcaIdentityEvidence(
+        executable_path=str(executable.resolve(strict=False)) if executable is not None else None,
+        executable_sha256=capabilities.executable_sha256,
+        executable_size_bytes=capabilities.executable_size_bytes,
+        file_version=capabilities.file_version,
+        product_version=capabilities.product_version,
+        version_banner=capabilities.version_banner,
+        version_output=capabilities.version_output,
+        gcode_identity=gcode_identity,
+        release_version=release_version if reconciled else None,
+        status="reconciled" if reconciled else "unresolved",
+        explanation=explanation,
+        source_url=source_url if reconciled else None,
+        support_claim=False,
     )
 
 
@@ -108,11 +243,46 @@ class OrcaCli:
             raise OrcaCliError(f"could not probe OrcaSlicer at {self.executable}: {exc}") from exc
         output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
         capabilities = parse_orca_help(output, returncode=completed.returncode)
+        executable_path = self.executable.resolve(strict=False)
+        executable_sha256, executable_size_bytes = _fingerprint_executable(executable_path)
+        file_version, product_version = _windows_executable_versions(executable_path)
+        version_output = None
+        version_returncode = None
+        version_error = None
+        if "--version" in capabilities.options:
+            try:
+                version_result = subprocess.run(
+                    [str(self.executable), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                    shell=False,
+                )
+                version_returncode = version_result.returncode
+                version_output = "\n".join(
+                    part for part in (version_result.stdout, version_result.stderr) if part
+                )
+            except subprocess.TimeoutExpired as exc:
+                version_output = "\n".join(
+                    part for part in (self._as_text(exc.stdout), self._as_text(exc.stderr)) if part
+                ) or None
+                version_error = "OrcaSlicer --version timed out"
+            except OSError as exc:
+                version_error = f"OrcaSlicer --version could not run: {exc}"
         return OrcaCliCapabilities(
-            executable=self.executable,
+            executable=executable_path,
             version_banner=capabilities.version_banner,
             options=capabilities.options,
             help_returncode=completed.returncode,
+            executable_sha256=executable_sha256,
+            executable_size_bytes=executable_size_bytes,
+            file_version=file_version,
+            product_version=product_version,
+            raw_help_output=output,
+            version_output=version_output,
+            version_returncode=version_returncode,
+            version_error=version_error,
         )
 
     def build_slice_argv(
@@ -144,6 +314,8 @@ class OrcaCli:
         return (
             str(self.executable),
             "--slice", "0",
+            "--arrange", "0",
+            "--orient", "0",
             "--outputdir", str(output),
             "--datadir", str(data),
             "--load-settings", ";".join(str(item) for item in machines),
@@ -374,3 +546,83 @@ class OrcaCli:
         except OSError as exc:
             raise OrcaCliError(f"could not inspect {label} directory {path}: {exc}") from exc
         raise OrcaCliError(f"{label} directory must be empty to isolate this slice: {path}")
+
+
+def _fingerprint_executable(path: Path) -> tuple[str | None, int | None]:
+    try:
+        if not path.is_file():
+            return None, None
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest(), size
+    except OSError:
+        return None, None
+
+
+def _windows_executable_versions(path: Path) -> tuple[str | None, str | None]:
+    """Read optional PE FileVersion/ProductVersion strings using Win32 APIs."""
+    if os.name != "nt":
+        return None, None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        version_api = ctypes.WinDLL("version", use_last_error=True)
+        ignored = wintypes.DWORD()
+        get_size = version_api.GetFileVersionInfoSizeW
+        get_size.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD))
+        get_size.restype = wintypes.DWORD
+        size = get_size(str(path), ctypes.byref(ignored))
+        if not size:
+            return None, None
+
+        data = ctypes.create_string_buffer(size)
+        get_info = version_api.GetFileVersionInfoW
+        get_info.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID)
+        get_info.restype = wintypes.BOOL
+        if not get_info(str(path), 0, size, data):
+            return None, None
+
+        query = version_api.VerQueryValueW
+        query.argtypes = (
+            wintypes.LPCVOID,
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.UINT),
+        )
+        query.restype = wintypes.BOOL
+        translation_pointer = ctypes.c_void_p()
+        translation_length = wintypes.UINT()
+        if not query(
+            data,
+            r"\VarFileInfo\Translation",
+            ctypes.byref(translation_pointer),
+            ctypes.byref(translation_length),
+        ):
+            return None, None
+        pair_count = translation_length.value // (2 * ctypes.sizeof(wintypes.WORD))
+        if pair_count < 1:
+            return None, None
+        pairs = ctypes.cast(
+            translation_pointer,
+            ctypes.POINTER(wintypes.WORD * (pair_count * 2)),
+        ).contents
+
+        def read_string(key: str) -> str | None:
+            for index in range(0, len(pairs), 2):
+                language, codepage = pairs[index], pairs[index + 1]
+                pointer = ctypes.c_void_p()
+                length = wintypes.UINT()
+                subblock = f"\\StringFileInfo\\{language:04x}{codepage:04x}\\{key}"
+                if query(data, subblock, ctypes.byref(pointer), ctypes.byref(length)) and pointer.value:
+                    value = ctypes.wstring_at(pointer.value).strip()
+                    if value:
+                        return value
+            return None
+
+        return read_string("FileVersion"), read_string("ProductVersion")
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None, None

@@ -410,9 +410,30 @@ class PrinterWorkspacePage(QWidget):
         self.generate_button.setEnabled(self.material_choice.count() > 0)
         self.refresh()
         if record.status == "settings_validated":
+            validation = record.validation
+            geometry = validation.get("geometry", {})
+            geometry_state = "validated" if geometry.get("valid") else "failed"
+            settings_state = "validated" if validation.get("state") == "sample_settings_validated" else "failed"
+            markings = (
+                "A–I labels and plate code are in the mesh."
+                if geometry.get("physical_labels_in_mesh") and geometry.get("physical_plate_code_in_mesh")
+                else "Printed sample labels or plate code are missing from the mesh."
+            )
+            orca = validation.get("orca", {})
+            identity_status = orca.get("identity_status", "unresolved")
+            identity = (
+                "Orca identity is mapped; this executable/profile/platform is not qualified in the support matrix."
+                if identity_status == "reconciled"
+                else "Orca identity is unresolved; no support-matrix claim is made."
+            )
+            reasons = tuple(validation.get("print_readiness_reasons", ()))
+            remaining = "\n".join(f"• {reason}" for reason in reasons)
             self.state.setText(
-                f"Sample settings validated for plate {record.plate_code}. The run is saved. "
-                "This plate has no printed sample labels or connectors and has not passed print-readiness checks."
+                f"Plate {record.plate_code} saved.\n"
+                f"Geometry: {geometry_state} ({geometry.get('backend_id', 'unknown')} {geometry.get('backend_version', '')}, "
+                f"{geometry.get('object_count', 0)} objects). {markings}\n"
+                f"Sample settings: {settings_state}. Print-ready: no.\n"
+                f"{identity}\nRemaining print-readiness checks:\n{remaining}"
             )
         else:
             messages = record.validation.get("messages", ())
@@ -500,6 +521,10 @@ class RunHistoryPage(QWidget):
         ]
         for sample in run.sample_map:
             lines.append(f"  {sample['label']}: {sample['settings']}")
+        reasons = tuple(run.validation.get("print_readiness_reasons", ()))
+        if reasons:
+            lines.append("Remaining print-readiness checks:")
+            lines.extend(f"  • {reason}" for reason in reasons)
         self.lookup_result.setPlainText("\n".join(lines))
 
 
