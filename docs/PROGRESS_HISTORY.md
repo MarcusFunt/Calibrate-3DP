@@ -51,4 +51,4 @@ If no experiment or test was run, state that explicitly. Distinguish a result re
 - Tests and exact outcomes: No tests were run.
 - Assumptions: The user asked to evaluate this architecture as a suggestion only. The document must not be interpreted as approval of the proposed schema, backend, DB/artifact split, import/export behavior, or tab names.
 - Deviations / blockers: The multi-sample Orca override spike and desktop packaging check are still required before selecting a geometry path.
-- Follow-up: Execute implementation plan Task 0B as a decision/prototype gate, report evidence and recommendation, and update the goal/plan only after the design is accepted.
+- Follow-up: Execute implementation plan preflight design gate as a decision/prototype gate, report evidence and recommendation, and update the goal/plan only after the design is accepted.

@@ -43,7 +43,7 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 
 ## Phase 0 — Resolve the slicing and plate risk
 
-### Task 0B: Evaluate the experiment configuration and geometry proposal
+### Preflight design gate: Evaluate the experiment configuration and geometry proposal
 
 **Status:** Design decision pending. The user requested an evaluation and explicitly identified this as a suggestion. Keep implementation choices open until the prototype evidence and a later decision.
 
@@ -240,7 +240,7 @@ The implementation has one active experiment planner: ironing flow × speed. Cou
 - [ ] Generate unique six-character codes using an alphabet without visually ambiguous characters; enforce a database uniqueness check and collision retry.
 - [ ] Assign short labels deterministically, starting A through I for nine samples; store label-to-candidate mapping.
 - [ ] Generate a tiny physical code coupon and ensure the code is readable after slicing.
-- [ ] Support grouped flat grids/zones and a distinct tower strategy through the backend selected at Task 0B. Preserve grouping when the experiment must span multiple physical plates. Preserve grouping when the experiment must span multiple physical plates.
+- [ ] Support grouped flat grids/zones and a distinct tower strategy through the backend selected at preflight design gate. Preserve grouping when the experiment must span multiple physical plates. Preserve grouping when the experiment must span multiple physical plates.
 - [ ] Design connectors to survive accidental plate removal and handling while allowing deliberate separation with a hand tool.
 - [ ] Validate bed bounds, keep-outs, clearances, collision-free samples, minimum connector geometry, mesh validity, and deterministic output. Record geometry/backend versions and hashes.
 - [ ] Test geometry properties at minimum/maximum bed size, irregular beds, narrow margins, and full plate capacity.
