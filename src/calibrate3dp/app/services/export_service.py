@@ -9,7 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import tempfile
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from calibrate3dp.app.models import SessionSnapshot
 from calibrate3dp.app.services.acceptance_service import (
@@ -113,6 +113,8 @@ class ExportService:
         acceptance_service: AcceptanceService | None = None,
         protected_roots: Sequence[str | Path] = (),
         orca_version: str | None = None,
+        protected_roots_provider: Callable[[], Sequence[str | Path]] | None = None,
+        orca_version_provider: Callable[[], str | None] | None = None,
     ) -> None:
         if not isinstance(repository, SessionRepository):
             raise TypeError("repository must be a SessionRepository")
@@ -120,11 +122,29 @@ class ExportService:
         self.acceptance_service = acceptance_service or AcceptanceService()
         self.protected_roots = tuple(Path(path).expanduser().resolve() for path in protected_roots)
         self.orca_version = orca_version.strip() if isinstance(orca_version, str) and orca_version.strip() else None
+        self._protected_roots_provider = protected_roots_provider
+        self._orca_version_provider = orca_version_provider
 
     @property
     def bundle_export_available(self) -> bool:
         """Bundle export remains off until a matching Orca version is verified."""
         return False
+
+    def _current_protected_roots(self) -> tuple[Path, ...]:
+        roots = (
+            self._protected_roots_provider()
+            if self._protected_roots_provider is not None
+            else self.protected_roots
+        )
+        return tuple(Path(path).expanduser().resolve() for path in roots or ())
+
+    def _current_orca_version(self) -> str | None:
+        version = (
+            self._orca_version_provider()
+            if self._orca_version_provider is not None
+            else self.orca_version
+        )
+        return version.strip() if isinstance(version, str) and version.strip() else None
 
     def build_draft(self, session: SessionSnapshot, *, new_profile_name: str) -> ExportDraft:
         """Build a reviewable profile copy after checking acceptance evidence."""
@@ -221,7 +241,7 @@ class ExportService:
             report_paths=_report_paths(session.artifact_paths),
             confirmation_status=confirmation_status,
             confirmation_reason=confirmation_reason,
-            orca_version=self.orca_version,
+            orca_version=self._current_orca_version(),
             profile_payload=profile_payload,
         )
 
@@ -345,8 +365,9 @@ class ExportService:
             target.with_name(f"{target.stem}.manifest.json"),
             target.with_name(f"{target.stem}.report.md"),
         )
+        protected_roots = self._current_protected_roots()
         for destination in destinations:
-            for root in self.protected_roots:
+            for root in protected_roots:
                 if _is_within(destination, root):
                     raise ExportServiceError("exports cannot be written inside an Orca profile/config root")
             source_path = self._source_file_for(draft)

@@ -527,6 +527,12 @@ class AppShell:
                         acceptance_service=acceptance_service,
                         protected_roots=config_roots,
                         orca_version=getattr(setup_state, "version_banner", None),
+                        protected_roots_provider=lambda: getattr(
+                            self.profile_service.setup_state, "config_roots", ()
+                        ),
+                        orca_version_provider=lambda: getattr(
+                            self.profile_service.setup_state, "version_banner", None
+                        ),
                     ),
                     on_back=self._on_export_back,
                     on_exported=self._on_export_written,
