@@ -18,11 +18,13 @@ class SetupPage:
         dpg: Any,
         *,
         on_profiles_changed: Callable[[], None] | None = None,
+        on_setup_checked: Callable[[], None] | None = None,
         diagnostics_options: Callable[[], AppSettings] | None = None,
     ) -> None:
         self.service = service
         self.dpg = dpg
         self.on_profiles_changed = on_profiles_changed
+        self.on_setup_checked = on_setup_checked
         self.diagnostics_options = diagnostics_options
 
     def render(self) -> None:
@@ -103,6 +105,8 @@ class SetupPage:
     def _on_recheck(self, sender: Any = None, app_data: Any = None, user_data: Any = None) -> None:
         del sender, app_data, user_data
         self._render_state(self.service.check_setup())
+        if self.on_setup_checked is not None:
+            self.on_setup_checked()
 
     def _on_diagnostics_destination(
         self, sender: Any, app_data: Any, user_data: Any = None

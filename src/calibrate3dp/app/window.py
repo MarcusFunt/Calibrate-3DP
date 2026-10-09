@@ -24,6 +24,7 @@ from calibrate3dp.app.services.acceptance_service import AcceptanceService
 from calibrate3dp.app.services.experiment_service import ExperimentService
 from calibrate3dp.app.services.export_service import ExportService
 from calibrate3dp.app.services.generation_port import GenerationState, ValidationState
+from calibrate3dp.app.services.orca_generation_service import OrcaGenerationService
 from calibrate3dp.app.services.profile_service import ProfileService
 from calibrate3dp.app.services.session_service import SessionService
 from calibrate3dp.app.services.settings_service import (
@@ -32,6 +33,7 @@ from calibrate3dp.app.services.settings_service import (
     default_workspace_root,
 )
 from calibrate3dp.storage.session_store import SessionRepository
+from calibrate3dp.orca_cli import OrcaCli
 
 
 PAGE_LABELS: Mapping[str, str] = {
@@ -135,6 +137,19 @@ class AppShell:
             config_roots=self.app_settings.orca_config_roots,
         )
         self.experiment_service = self.services.get("experiment_service") or ExperimentService()
+        if services is None and "generation_service" not in self.services:
+            session_service = self.services["session_service"]
+            if isinstance(getattr(session_service, "repository", None), SessionRepository):
+                self.services["generation_service"] = OrcaGenerationService(
+                    cli_provider=lambda: (
+                        OrcaCli(self.profile_service.setup_state.executable)
+                        if self.profile_service.setup_state.executable is not None
+                        else None
+                    ),
+                    experiment_service=self.experiment_service,
+                    session_service=session_service,
+                    setup_state_provider=lambda: self.profile_service.setup_state,
+                )
         self.profile_selection: Any | None = None
         self.experiment_plan: ExperimentPlan | None = None
         self.active_session: SessionSnapshot | None = self.services.get("session")
@@ -447,6 +462,7 @@ class AppShell:
             self._setup_page = SetupPage(
                 self.profile_service,
                 dpg,
+                on_setup_checked=self._refresh_generation_preview,
                 diagnostics_options=lambda: self.settings_service.settings,
             )
             self._setup_page.render()
@@ -593,6 +609,12 @@ class AppShell:
         if self._results_page is not None:
             self._results_page.tick()
 
+    def _refresh_generation_preview(self) -> None:
+        """Re-run the capability gate after the user changes or rechecks Orca."""
+        page = self._generation_page
+        if page is not None:
+            page.refresh_preview()
+
     def _on_results_ready(self) -> None:
         """Open results only with the reviewed plan and generation session."""
         if self._results_page is None or self.experiment_plan is None:
@@ -620,6 +642,16 @@ class AppShell:
             self._confirmation_run_id = None
             return
         if session is not None and self.services.get("session_service") is not None:
+            if isinstance(self.services.get("generation_service"), OrcaGenerationService):
+                try:
+                    session = self.services["session_service"].resume(session.session_id)
+                except Exception as exc:
+                    if self._dpg is not None and self._dpg.does_item_exist("generation_availability"):
+                        self._dpg.set_value(
+                            "generation_availability",
+                            f"The saved generation artifacts could not be reloaded: {exc}",
+                        )
+                    return
             session = replace(session, current_step="results", status="awaiting_results")
             self.services["session_service"].save(session)
             self.active_session = session

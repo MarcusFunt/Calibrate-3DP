@@ -220,6 +220,18 @@ class GenerationUiTests(unittest.TestCase):
         self.assertIsNone(page.preview.estimated_duration)
         self.assertIn("slicing service", page.unavailable_reason.casefold())
 
+    def test_preview_probe_failure_offers_setup_recovery(self):
+        class FailedProbeService:
+            def preview(self, _session, _plan):
+                raise RuntimeError("Orca CLI help returned no text")
+
+        page = self._make_page(service=FailedProbeService())
+
+        self.assertFalse(page.can_start)
+        self.assertTrue(page.recovery_available)
+        self.assertTrue(self.dpg.items["generation_recovery"]["show"])
+        self.assertIn("recheck setup", page.recovery_message.casefold())
+
     def test_running_job_keeps_window_responsive(self):
         self._require_api()
         gate = threading.Event()
