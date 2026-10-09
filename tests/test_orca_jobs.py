@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from threading import Event
 import unittest
 
 from calibrate3dp.orca_cli import OrcaCliCapabilities, OrcaSliceResult
@@ -293,6 +294,42 @@ class OrcaJobTests(unittest.TestCase):
                     cli=FakeOrcaCli(),
                     output_dir=Path(directory) / "wrong-profile",
                 )
+
+    def test_cancelled_experiment_writes_manifest_without_starting_a_slice(self):
+        from calibrate3dp.ironing import create_initial_ironing_experiment
+
+        profiles = self.resolved_profiles()
+        plan = create_initial_ironing_experiment(
+            plan_id="cancel-before-first-candidate",
+            baseline_settings={"ironing_type": "top", "ironing_flow": "10", "ironing_speed": "30"},
+            flow_values=(8, 10, 12),
+            speed_values=(20, 30, 40),
+        )
+        cli = FakeOrcaCli()
+        cancel_event = Event()
+        cancel_event.set()
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "cancelled-run"
+            result = slice_ironing_experiment(
+                plan=plan,
+                machine=profiles["machine"],
+                process=profiles["process"],
+                filament=profiles["filament"],
+                cli=cli,
+                output_dir=run_dir,
+                cancel_event=cancel_event,
+            )
+
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(result.cancelled)
+        self.assertFalse(result.success)
+        self.assertEqual(result.candidates, ())
+        self.assertEqual(cli.calls, [])
+        self.assertTrue(manifest["cancelled"])
+        self.assertFalse(manifest["success"])
+        self.assertEqual(manifest["candidate_results"], [])
 
 
 if __name__ == "__main__":

@@ -250,6 +250,8 @@ class CandidateAssessment:
     ratings: Mapping[str, int] | None = None
     defect_tags: tuple[str, ...] = ()
     notes: str = ""
+    verdict: str | None = None
+    photo_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _non_empty_string(self.candidate_id, "assessment candidate id")
@@ -270,8 +272,25 @@ class CandidateAssessment:
             raise ExperimentDefinitionError("defect tags must be unique")
         if not isinstance(self.notes, str):
             raise ExperimentDefinitionError("assessment notes must be a string")
+        if self.verdict is not None and (
+            not isinstance(self.verdict, str)
+            or self.verdict not in {"pass", "fail", "uncertain", "missing"}
+        ):
+            raise ExperimentDefinitionError(
+                "verdict must be pass, fail, uncertain, missing, or None"
+            )
+        if self.verdict in {"uncertain", "missing"} and clean_ratings:
+            raise ExperimentDefinitionError(
+                f"{self.verdict} candidates cannot have numeric ratings"
+            )
+        if isinstance(self.photo_paths, (str, bytes)) or not isinstance(self.photo_paths, Sequence):
+            raise ExperimentDefinitionError("photo paths must be a sequence of non-empty strings")
+        photo_paths = tuple(_non_empty_string(path, "photo path") for path in self.photo_paths)
+        if len(photo_paths) != len(set(photo_paths)):
+            raise ExperimentDefinitionError("photo paths must be unique")
         object.__setattr__(self, "ratings", MappingProxyType(clean_ratings))
         object.__setattr__(self, "defect_tags", tags)
+        object.__setattr__(self, "photo_paths", photo_paths)
 
 
 @dataclass(frozen=True)
@@ -282,6 +301,7 @@ class ExperimentResults:
     assessments: tuple[CandidateAssessment, ...]
     selected_candidate_id: str | None = None
     accepted: bool | None = None
+    tied_candidate_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _non_empty_string(self.plan_id, "results plan id")
@@ -294,7 +314,21 @@ class ExperimentResults:
             raise ExperimentDefinitionError("accepted must be True, False, or None")
         if self.accepted is True and self.selected_candidate_id is None:
             raise ExperimentDefinitionError("accepted results must select a candidate")
+        if isinstance(self.tied_candidate_ids, (str, bytes)) or not isinstance(
+            self.tied_candidate_ids, Sequence
+        ):
+            raise ExperimentDefinitionError("tied candidate ids must be a sequence")
+        tied_ids = tuple(_non_empty_string(item, "tied candidate id") for item in self.tied_candidate_ids)
+        if len(tied_ids) != len(set(tied_ids)):
+            raise ExperimentDefinitionError("tied candidate ids must be unique")
+        if self.selected_candidate_id in tied_ids:
+            raise ExperimentDefinitionError("the selected candidate cannot also be a tie candidate")
+        if tied_ids and self.selected_candidate_id is None:
+            raise ExperimentDefinitionError("tie candidates require a selected candidate")
+        if self.accepted is True and tied_ids:
+            raise ExperimentDefinitionError("tied results cannot be accepted")
         object.__setattr__(self, "assessments", assessments)
+        object.__setattr__(self, "tied_candidate_ids", tied_ids)
 
     def validate_for(self, plan: ExperimentPlan) -> None:
         """Raise if any entered result refers to a different or unknown plan item."""
@@ -317,11 +351,26 @@ class ExperimentResults:
                 raise ExperimentStateError(f"unknown selected candidate {self.selected_candidate_id!r}")
             if self.selected_candidate_id not in assessed:
                 raise ExperimentStateError("selected candidate must have a manual assessment")
+        tied = set(self.tied_candidate_ids)
+        unknown_ties = tied - known
+        if unknown_ties:
+            raise ExperimentStateError("unknown tied candidates: " + ", ".join(sorted(unknown_ties)))
+        unassessed_ties = tied - assessed
+        if unassessed_ties:
+            raise ExperimentStateError(
+                "tie candidates must have manual assessments: " + ", ".join(sorted(unassessed_ties))
+            )
+        if self.accepted is True:
+            by_id = {item.candidate_id: item for item in self.assessments}
+            if assessed != known or any(by_id[item].verdict not in {"pass", "fail"} for item in known):
+                raise ExperimentStateError("accepted results require an explicit pass or fail for every candidate")
+            if by_id[self.selected_candidate_id].verdict != "pass":
+                raise ExperimentStateError("the accepted candidate must have a pass verdict")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-ready, versioned representation of manual results."""
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "plan_id": self.plan_id,
             "assessments": [
                 {
@@ -329,45 +378,60 @@ class ExperimentResults:
                     "ratings": dict(item.ratings),
                     "defect_tags": list(item.defect_tags),
                     "notes": item.notes,
+                    "verdict": item.verdict,
+                    "photo_paths": list(item.photo_paths),
                 }
                 for item in self.assessments
             ],
             "selected_candidate_id": self.selected_candidate_id,
             "accepted": self.accepted,
+            "tied_candidate_ids": list(self.tied_candidate_ids),
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ExperimentResults":
-        """Load a version-1 result payload; callers should validate it for a plan."""
-        required = {
+        """Load result payloads from versions 1 and 2."""
+        base_required = {
             "schema_version",
             "plan_id",
             "assessments",
             "selected_candidate_id",
             "accepted",
         }
-        _validate_payload(payload, required, "experiment results")
-        if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        if not isinstance(payload, Mapping):
+            raise ExperimentDefinitionError("experiment results payload must be an object")
+        version = payload.get("schema_version")
+        if type(version) is not int or version not in {1, 2}:
             raise ExperimentDefinitionError("unsupported experiment results schema_version")
+        required = base_required if version == 1 else base_required | {"tied_candidate_ids"}
+        _validate_payload(payload, required, "experiment results")
         assessments_raw = payload["assessments"]
         if isinstance(assessments_raw, (str, bytes)) or not isinstance(assessments_raw, Sequence):
             raise ExperimentDefinitionError("experiment assessments must be a sequence")
         assessments = []
         for item in assessments_raw:
-            _validate_payload(item, {"candidate_id", "ratings", "defect_tags", "notes"}, "assessment")
+            assessment_keys = {"candidate_id", "ratings", "defect_tags", "notes"}
+            if version == 2:
+                assessment_keys |= {"verdict", "photo_paths"}
+            _validate_payload(item, assessment_keys, "assessment")
             assessments.append(
                 CandidateAssessment(
                     candidate_id=item["candidate_id"],
                     ratings=item["ratings"],
                     defect_tags=item["defect_tags"],
                     notes=item["notes"],
+                    verdict=None if version == 1 else item["verdict"],
+                    photo_paths=() if version == 1 else item["photo_paths"],
                 )
             )
         return cls(
             plan_id=payload["plan_id"],
             assessments=tuple(assessments),
             selected_candidate_id=payload["selected_candidate_id"],
-            accepted=payload["accepted"],
+            # Version 1 had no explicit verdict, so a historical acceptance
+            # cannot satisfy the v2 evidence gate until the user reviews it.
+            accepted=(None if version == 1 and payload["accepted"] is True else payload["accepted"]),
+            tied_candidate_ids=() if version == 1 else payload["tied_candidate_ids"],
         )
 
 

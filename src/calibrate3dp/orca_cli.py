@@ -10,9 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 from pathlib import Path
+from queue import Empty, Queue
 import re
 import subprocess
-from typing import Sequence
+from threading import Event, Thread
+import time
+from typing import Callable, Sequence
 
 
 _REQUIRED_OPTIONS = frozenset({
@@ -46,12 +49,18 @@ class OrcaSliceResult:
     stdout: str
     stderr: str
     gcode_files: tuple[Path, ...]
+    cancelled: bool = False
 
 
 def parse_orca_help(help_text: str, *, returncode: int = 0) -> OrcaCliCapabilities:
     """Parse the executable version banner and option names from --help output."""
     if not isinstance(help_text, str):
         raise OrcaCliError("OrcaSlicer help output must be text")
+    if not help_text.strip():
+        raise OrcaCliError(
+            "OrcaSlicer --help returned no text; select its CLI/console executable "
+            "instead of the graphical launcher"
+        )
     if returncode != 0:
         raise OrcaCliError(f"OrcaSlicer --help exited with status {returncode}")
     options = frozenset(re.findall(r"(?<!\S)--[A-Za-z0-9][A-Za-z0-9-]*", help_text))
@@ -151,6 +160,8 @@ class OrcaCli:
         output_dir: str | Path,
         data_dir: str | Path,
         timeout_seconds: float = 300,
+        cancel_event: Event | None = None,
+        output_callback: Callable[[str, str], None] | None = None,
     ) -> OrcaSliceResult:
         """Run one isolated slice and return logs, timing, and generated G-code."""
         if (
@@ -168,26 +179,36 @@ class OrcaCli:
             data_dir=data_dir,
         )
         started_at = datetime.now(timezone.utc).isoformat()
-        try:
-            completed = subprocess.run(
-                list(argv),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
+        if cancel_event is None and output_callback is None:
+            try:
+                completed = subprocess.run(
+                    list(argv),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                    shell=False,
+                )
+                returncode: int | None = completed.returncode
+                timed_out = False
+                cancelled = False
+                stdout = self._as_text(completed.stdout)
+                stderr = self._as_text(completed.stderr)
+            except subprocess.TimeoutExpired as exc:
+                returncode = None
+                timed_out = True
+                cancelled = False
+                stdout = self._as_text(exc.stdout)
+                stderr = self._as_text(exc.stderr)
+            except OSError as exc:
+                raise OrcaCliError(f"could not start OrcaSlicer at {self.executable}: {exc}") from exc
+        else:
+            stdout, stderr, returncode, timed_out, cancelled = self._run_streaming(
+                argv,
+                timeout_seconds=timeout_seconds,
+                cancel_event=cancel_event,
+                output_callback=output_callback,
             )
-            returncode: int | None = completed.returncode
-            timed_out = False
-            stdout = self._as_text(completed.stdout)
-            stderr = self._as_text(completed.stderr)
-        except subprocess.TimeoutExpired as exc:
-            returncode = None
-            timed_out = True
-            stdout = self._as_text(exc.stdout)
-            stderr = self._as_text(exc.stderr)
-        except OSError as exc:
-            raise OrcaCliError(f"could not start OrcaSlicer at {self.executable}: {exc}") from exc
         finished_at = datetime.now(timezone.utc).isoformat()
         output = Path(output_dir)
         gcode_files = tuple(sorted(
@@ -203,6 +224,114 @@ class OrcaCli:
             stdout=stdout,
             stderr=stderr,
             gcode_files=gcode_files,
+            cancelled=cancelled,
+        )
+
+    def _run_streaming(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_seconds: float,
+        cancel_event: Event | None,
+        output_callback: Callable[[str, str], None] | None,
+    ) -> tuple[str, str, int | None, bool, bool]:
+        """Run a CLI process with streamed logs and cooperative cancellation."""
+        if cancel_event is not None and cancel_event.is_set():
+            return "", "", None, False, True
+        try:
+            process = subprocess.Popen(
+                list(argv),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                shell=False,
+            )
+        except OSError as exc:
+            raise OrcaCliError(f"could not start OrcaSlicer at {self.executable}: {exc}") from exc
+
+        output: Queue[tuple[str, str | None]] = Queue()
+
+        def drain(name: str, stream: object) -> None:
+            try:
+                reader = stream
+                while True:
+                    line = reader.readline()
+                    if not line:
+                        break
+                    output.put((name, self._as_text(line)))
+            finally:
+                output.put((name, None))
+
+        assert process.stdout is not None and process.stderr is not None
+        readers = (
+            Thread(target=drain, args=("stdout", process.stdout), daemon=True),
+            Thread(target=drain, args=("stderr", process.stderr), daemon=True),
+        )
+        for reader in readers:
+            reader.start()
+
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        finished_streams = 0
+        timed_out = False
+        cancelled = False
+        deadline = time.monotonic() + timeout_seconds
+
+        def stop_process() -> None:
+            if process.poll() is not None:
+                return
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+        try:
+            while finished_streams < 2:
+                if process.poll() is None:
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancelled = True
+                        stop_process()
+                    elif time.monotonic() >= deadline:
+                        timed_out = True
+                        stop_process()
+
+                try:
+                    name, text = output.get(timeout=0.05)
+                except Empty:
+                    continue
+                if text is None:
+                    finished_streams += 1
+                    continue
+                if name == "stdout":
+                    stdout_parts.append(text)
+                else:
+                    stderr_parts.append(text)
+                if output_callback is not None:
+                    output_callback(name, text)
+            returncode = process.wait()
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            for reader in readers:
+                reader.join(timeout=1)
+
+        return (
+            "".join(stdout_parts),
+            "".join(stderr_parts),
+            returncode,
+            timed_out,
+            cancelled,
         )
 
     @staticmethod

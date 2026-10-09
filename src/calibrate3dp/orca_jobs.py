@@ -8,7 +8,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping
+from threading import Event
+from typing import Any, Callable, Mapping
 
 from calibrate3dp.coupons import CouponSpec, generate_ironing_coupons
 from calibrate3dp.experiments import ExperimentPlan
@@ -39,10 +40,11 @@ class CandidateSlice:
     argv: tuple[str, ...]
     started_at: str
     finished_at: str
+    cancelled: bool = False
 
     @property
     def success(self) -> bool:
-        return self.returncode == 0 and not self.timed_out and bool(self.gcode_files)
+        return self.returncode == 0 and not self.timed_out and not self.cancelled and bool(self.gcode_files)
 
 
 @dataclass(frozen=True)
@@ -52,10 +54,11 @@ class OrcaExperimentRun:
     options: frozenset[str]
     candidates: tuple[CandidateSlice, ...]
     manifest_path: Path
+    cancelled: bool = False
 
     @property
     def success(self) -> bool:
-        return bool(self.candidates) and all(item.success for item in self.candidates)
+        return not self.cancelled and bool(self.candidates) and all(item.success for item in self.candidates)
 
 
 def slice_ironing_experiment(
@@ -69,6 +72,9 @@ def slice_ironing_experiment(
     process_baseline_patch: Mapping[str, Any] | None = None,
     coupon_spec: CouponSpec = CouponSpec(),
     timeout_seconds: float = 300,
+    cancel_event: Event | None = None,
+    on_candidate_started: Callable[[int, int, str], None] | None = None,
+    on_output: Callable[[str, str], None] | None = None,
 ) -> OrcaExperimentRun:
     """Generate one top-surface coupon and isolated G-code job per candidate.
 
@@ -154,7 +160,14 @@ def slice_ironing_experiment(
     candidate_dir.mkdir()
 
     results: list[CandidateSlice] = []
-    for candidate, coupon in zip(plan.candidates, coupon_artifacts):
+    cancelled = False
+    total_candidates = len(plan.candidates)
+    for index, (candidate, coupon) in enumerate(zip(plan.candidates, coupon_artifacts), start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+        if on_candidate_started is not None:
+            on_candidate_started(index, total_candidates, candidate.candidate_id)
         folder = candidate_dir / candidate.candidate_id
         folder.mkdir()
         process_path = folder / "process.json"
@@ -174,6 +187,11 @@ def slice_ironing_experiment(
         data.mkdir()
 
         try:
+            run_options = {}
+            if cancel_event is not None:
+                run_options["cancel_event"] = cancel_event
+            if on_output is not None:
+                run_options["output_callback"] = on_output
             slice_result: OrcaSliceResult = cli.run_slice(
                 model_path=coupon.model_path,
                 machine_process_profiles=(machine_path, process_path),
@@ -181,6 +199,7 @@ def slice_ironing_experiment(
                 output_dir=output,
                 data_dir=data,
                 timeout_seconds=timeout_seconds,
+                **run_options,
             )
         except Exception as exc:
             raise OrcaJobError(
@@ -216,7 +235,11 @@ def slice_ironing_experiment(
             argv=slice_result.argv,
             started_at=slice_result.started_at,
             finished_at=slice_result.finished_at,
+            cancelled=slice_result.cancelled,
         ))
+        if slice_result.cancelled:
+            cancelled = True
+            break
 
     run = OrcaExperimentRun(
         plan_id=plan.plan_id,
@@ -224,6 +247,7 @@ def slice_ironing_experiment(
         options=capabilities.options,
         candidates=tuple(results),
         manifest_path=root / "manifest.json",
+        cancelled=cancelled,
     )
     manifest = _manifest(
         run=run,
@@ -366,6 +390,7 @@ def _manifest(
                 ],
                 "returncode": item.returncode,
                 "timed_out": item.timed_out,
+                "cancelled": item.cancelled,
                 "argv": list(item.argv),
                 "started_at": item.started_at,
                 "finished_at": item.finished_at,
@@ -375,6 +400,7 @@ def _manifest(
             for item in run.candidates
         ],
         "success": run.success,
+        "cancelled": run.cancelled,
     }
 
 

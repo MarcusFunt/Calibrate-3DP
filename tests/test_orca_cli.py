@@ -1,6 +1,8 @@
 import subprocess
 import tempfile
+from threading import Event
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,21 @@ from calibrate3dp.orca_cli import (
 
 
 class OrcaCliTests(unittest.TestCase):
+    @staticmethod
+    def _slice_inputs(root):
+        model, machine, process, filament = (
+            root / "coupon.stl",
+            root / "machine.json",
+            root / "process.json",
+            root / "filament.json",
+        )
+        for path in (model, machine, process, filament):
+            path.write_text("{}")
+        output, data = root / "out", root / "data"
+        output.mkdir()
+        data.mkdir()
+        return model, machine, process, filament, output, data
+
     def test_help_parser_records_version_and_does_not_assume_logfile(self):
         help_text = """OrcaSlicer-01.10.01.50:
   --slice arg                 Slice the input file
@@ -162,6 +179,87 @@ class OrcaCliTests(unittest.TestCase):
         self.assertIsNotNone(result.finished_at)
         self.assertFalse(result.timed_out)
         self.assertIsInstance(run.call_args.args[0], list)
+
+    def test_run_slice_streams_output_from_both_process_channels(self):
+        class CompletedProcess:
+            stdout = StringIO("slice started\nslice complete\n")
+            stderr = StringIO("profile warning\n")
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, machine, process, filament, output, data = self._slice_inputs(root)
+            received = []
+            with patch("calibrate3dp.orca_cli.subprocess.Popen", return_value=CompletedProcess()):
+                result = OrcaCli(root / "orca-slicer.exe").run_slice(
+                    model_path=model,
+                    machine_process_profiles=(machine, process),
+                    filament_profiles=(filament,),
+                    output_dir=output,
+                    data_dir=data,
+                    output_callback=lambda name, line: received.append((name, line)),
+                )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "slice started\nslice complete\n")
+        self.assertEqual(result.stderr, "profile warning\n")
+        self.assertCountEqual(
+            received,
+            [
+                ("stdout", "slice started\n"),
+                ("stdout", "slice complete\n"),
+                ("stderr", "profile warning\n"),
+            ],
+        )
+        self.assertFalse(result.cancelled)
+
+    def test_run_slice_terminates_process_when_stream_callback_requests_cancel(self):
+        class RunningProcess:
+            def __init__(self):
+                self.stdout = StringIO("slice started\n")
+                self.stderr = StringIO("")
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, machine, process, filament, output, data = self._slice_inputs(root)
+            process_handle = RunningProcess()
+            cancel_event = Event()
+
+            def cancel_after_output(_name, _line):
+                cancel_event.set()
+
+            with patch("calibrate3dp.orca_cli.subprocess.Popen", return_value=process_handle):
+                result = OrcaCli(root / "orca-slicer.exe").run_slice(
+                    model_path=model,
+                    machine_process_profiles=(machine, process),
+                    filament_profiles=(filament,),
+                    output_dir=output,
+                    data_dir=data,
+                    cancel_event=cancel_event,
+                    output_callback=cancel_after_output,
+                )
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(result.returncode, -15)
+        self.assertEqual(result.stdout, "slice started\n")
 
 
 if __name__ == "__main__":

@@ -133,13 +133,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - SQLite stores the session index and versioned JSON payloads. Large G-code, 3MF, and image files stay in per-session folders; database values use relative paths.
 - Session IDs are generated once and remain stable across every resume and refinement.
 
-- [ ] Write tests test_session_round_trip_restores_profiles_plan_and_results, test_save_updates_timestamp_atomically, test_list_recent_is_ordered_and_limited, test_unknown_session_has_clear_error, and test_artifact_paths_must_stay_inside_session_root.
-- [ ] Run the session-store test file and verify each test fails for the missing repository behavior.
-- [ ] Implement schema version 1 migration and SessionRepository CRUD operations using sqlite3 transactions.
-- [ ] Implement SessionService operations; serialize ExperimentPlan and ExperimentResults with their existing to_dict/from_dict APIs and validate results against the loaded plan.
-- [ ] Store per-session profile JSON snapshots and generated artifacts outside SQLite; calculate and save source-profile hashes at selection time.
-- [ ] Run the session-store tests plus the existing profile and experiment unit tests.
-- [ ] Commit as feat: persist calibration sessions.
+- [x] Write tests test_session_round_trip_restores_profiles_plan_and_results, test_save_updates_timestamp_atomically, test_list_recent_is_ordered_and_limited, test_unknown_session_has_clear_error, and test_artifact_paths_must_stay_inside_session_root.
+- [x] Run the session-store test file and verify each test fails for the missing repository behavior.
+- [x] Implement schema version 1 migration and SessionRepository CRUD operations using sqlite3 transactions.
+- [x] Implement SessionService operations; serialize ExperimentPlan and ExperimentResults with their existing to_dict/from_dict APIs and validate results against the loaded plan.
+- [x] Store per-session profile JSON snapshots and generated artifacts outside SQLite; calculate and save source-profile hashes at selection time.
+- [x] Run the session-store tests plus the existing profile and experiment unit tests.
+- [x] Commit as feat: persist calibration sessions.
 
 ## Task 3: Build Orca Setup, Profile Import, and Profile Selection
 
@@ -155,12 +155,12 @@ The concrete types may add fields needed by the implementation, but they must re
 - Each selected preset is displayed with kind, name, scope, source path, source hash, inheritance chain, and per-setting provenance.
 - The continue action emits a complete ProfileSelection only when all three profiles resolve and all module-required values are present.
 
-- [ ] Write tests test_missing_orca_shows_browse_and_diagnostics_actions, test_malformed_json_shows_field_level_error, test_missing_parent_blocks_continue, test_ambiguous_name_requires_scope, and test_effective_values_show_provenance.
-- [ ] Run the profile UI test file and verify the tests fail before implementation.
-- [ ] Implement setup state for detected executable, detected config roots, Orca version, last check, compatibility status, browse actions, recheck, and offline diagnostics export.
-- [ ] Implement JSON and supported bundle import without writing into Orca's config directory; make unsupported bundles display an actionable adapter message.
-- [ ] Implement the three profile cards, inherited-value inspector, and a baseline summary that reads imported values rather than asking users to transcribe them.
-- [ ] Run profile UI tests and existing profile resolver/export tests.
+- [x] Write tests test_missing_orca_shows_browse_and_diagnostics_actions, test_malformed_json_shows_field_level_error, test_missing_parent_blocks_continue, test_ambiguous_name_requires_scope, and test_effective_values_show_provenance.
+- [x] Run the profile UI test file and verify the tests fail before implementation.
+- [x] Implement setup state for detected executable, detected config roots, Orca version, last check, compatibility status, browse actions, recheck, and offline diagnostics export.
+- [x] Implement JSON and supported bundle import without writing into Orca's config directory; make unsupported bundles display an actionable adapter message.
+- [x] Implement the three profile cards, inherited-value inspector, and a baseline summary that reads imported values rather than asking users to transcribe them.
+- [x] Run profile UI tests and existing profile resolver/export tests.
 - [ ] Commit as feat: add Orca profile setup and selection.
 
 ## Task 4: Add Module Choice, Baseline Summary, and Experiment Review
@@ -179,14 +179,14 @@ The concrete types may add fields needed by the implementation, but they must re
 - Clamp only to explicit limits supplied by the active Orca schema adapter. If a clamp creates duplicate values, if a required setting is absent, or if numeric precision cannot represent three distinct values, block generation and ask the user to edit bounds.
 - The review view shows the full parameter matrix, fixed settings, candidate IDs, the exact generated plate map, assumptions, estimates if verified, and all warnings before Generate is enabled.
 
-- [ ] Write tests test_ironing_defaults_use_imported_profile_and_match_documented_matrix, test_missing_baseline_blocks_plan, test_duplicate_after_schema_clamp_requires_edit, test_fixed_settings_are_visible, and test_unavailable_module_cannot_start.
-- [ ] Run the experiment review test file and verify it fails before implementation.
-- [ ] Implement deterministic baseline-relative sweep options and call the existing ironing planner; keep the 3x3 matrix editable before creating the final plan.
-- [ ] Implement module cards for Ironing Finish, Bridge Quality, and Support Interface/Removal; disable cards until their experiment planners and geometry adapters are available.
-- [ ] Implement the table model and review page; allow bound/step edits and parameter locking only where the module declares the parameter.
-- [ ] Show a clear explanation of how each proposed range was calculated and what values are held fixed.
-- [ ] Run UI review tests and existing ironing/experiment tests.
-- [ ] Commit as feat: add calibration setup and experiment review.
+- [x] Write tests test_ironing_defaults_use_imported_profile_and_match_documented_matrix, test_missing_baseline_blocks_plan, test_duplicate_after_schema_clamp_requires_edit, test_fixed_settings_are_visible, and test_unavailable_module_cannot_start.
+- [x] Run the experiment review test file and verify it fails before implementation.
+- [x] Implement deterministic baseline-relative sweep options and call the existing ironing planner; keep the 3x3 matrix editable before creating the final plan.
+- [x] Implement module cards for Ironing Finish, Bridge Quality, and Support Interface/Removal; disable cards until their experiment planners and geometry adapters are available.
+- [x] Implement the table model and review page; allow bound/step edits and parameter locking only where the module declares the parameter.
+- [x] Show a clear explanation of how each proposed range was calculated and what values are held fixed.
+- [x] Run UI review tests and existing ironing/experiment tests.
+- [x] Commit as feat: add calibration setup and experiment review.
 
 ## Task 5: Connect Preview, Slicing Progress, Cancellation, and Validation
 
@@ -202,19 +202,20 @@ The concrete types may add fields needed by the implementation, but they must re
 - The UI observes GenerationEvent values, shows logs as they arrive, and enables Results only after state=succeeded and validation state is valid.
 - A canceled or failed job has no ready-to-print state. Partial outputs and logs remain attached to the session and are visibly labeled invalid.
 
-- [ ] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_generation_ui_applies_worker_events_on_ui_loop, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
-- [ ] Run the generation UI test file and verify it fails before implementation.
-- [ ] Implement preview rendering from ExperimentPreview, including candidate map, plate count, and verified estimates.
-- [ ] Implement the job progress view with phase text, indeterminate progress when needed, expandable stdout/stderr, cancel action, and validation summary.
-- [ ] Implement event subscription/unsubscription and close behavior so no orphaned UI callback can update a closed page.
-- [ ] Run UI tests and the original integration smoke test with the fake service.
-- [ ] Commit as feat: add calibration job progress UI.
+- [x] Write tests test_generation_page_disables_start_when_orca_unavailable, test_running_job_keeps_window_responsive, test_generation_ui_applies_worker_events_on_ui_loop, test_cancel_preserves_logs_and_marks_partial_output_invalid, test_failure_shows_recovery_action, and test_results_step_requires_successful_validation.
+- [x] Run the generation UI test file and verify it fails before implementation.
+- [x] Implement preview rendering from ExperimentPreview, including candidate map, plate count, and verified estimates.
+- [x] Implement the job progress view with phase text, indeterminate progress when needed, expandable stdout/stderr, cancel action, and validation summary.
+- [x] Implement render-loop event delivery and close behavior so no worker event can update a closed page.
+- [x] Run UI tests and the original integration smoke test with the fake service.
+- [x] Commit as feat: add calibration job progress UI.
 
 ## Task 6: Implement Result Entry, Attachments, and Explicit Outcome States
 
 **Files:**
 - Modify: src/calibrate3dp/experiments.py
 - Modify: src/calibrate3dp/storage/session_store.py
+- Modify: src/calibrate3dp/app/window.py
 - Create: src/calibrate3dp/app/pages/results_page.py
 - Create: src/calibrate3dp/app/widgets/assessment_editor.py
 - Create: tests/test_result_contract.py
@@ -224,17 +225,18 @@ The concrete types may add fields needed by the implementation, but they must re
 - CandidateAssessment retains candidate_id, ratings, defect_tags, and notes; add an optional verdict with values pass, fail, uncertain, or missing, plus zero or more session-relative photo paths.
 - ExperimentResults retains selected_candidate_id and accepted; add tied_candidate_ids while retaining the existing single selected candidate for adaptive refinement.
 - New results serialize as schema version 2. from_dict continues to read existing version 1 payloads with verdict=None, no photographs, and no tied candidates.
+- A version 1 record previously marked accepted is reopened as unconfirmed because it has no explicit verdict evidence for the new acceptance gate.
 - Missing means the physical specimen was unavailable; uncertain means it was present but could not be judged. Neither is converted to a score.
 - Photos are copied into the session evidence directory before their relative paths are saved.
 
-- [ ] Write tests test_version_1_results_still_load, test_version_2_round_trip_preserves_verdict_tie_and_photos, test_missing_specimen_cannot_have_numeric_ratings, test_tie_candidates_must_belong_to_plan, and test_photo_paths_cannot_escape_session_root.
-- [ ] Run the result-contract test file and verify it fails before implementation.
-- [ ] Extend CandidateAssessment and ExperimentResults validation/serialization compatibly; update existing tests for version 2 writes and version 1 reads.
-- [ ] Implement per-candidate editors for 1–5 ratings, pass/fail/uncertain/missing, defect tags, note, and local photograph attachments.
-- [ ] Persist each edit with a 300 ms debounce for text entry and immediately after rating, verdict, or attachment changes; show Saved, Saving, or Save Failed with retry.
-- [ ] Implement explicit winner and tie selection; incomplete or uncertain assessments remain visible and cannot silently pass the acceptance gate.
-- [ ] Run result-contract, results UI, session-store, and full existing unit tests.
-- [ ] Commit as feat: add resumable print result entry.
+- [x] Write tests test_version_1_results_still_load, test_version_2_round_trip_preserves_verdict_tie_and_photos, test_missing_specimen_cannot_have_numeric_ratings, test_tie_candidates_must_belong_to_plan, and test_photo_paths_cannot_escape_session_root.
+- [x] Run the result-contract test file and verify it fails before implementation.
+- [x] Extend CandidateAssessment and ExperimentResults validation/serialization compatibly; update existing tests for version 2 writes and version 1 reads.
+- [x] Implement per-candidate editors for 1–5 ratings, pass/fail/uncertain/missing, defect tags, note, and local photograph attachments.
+- [x] Persist each edit with a 300 ms debounce for text entry and immediately after rating, verdict, or attachment changes; show Saved, Saving, or Save Failed with retry.
+- [x] Implement explicit winner and tie selection; incomplete or uncertain assessments remain visible and cannot silently pass the acceptance gate.
+- [x] Run result-contract, results UI, session-store, and full existing unit tests.
+- [x] Commit as feat: add resumable print result entry.
 
 ## Task 7: Add Explainable Refinement and Final Confirmation
 
@@ -249,13 +251,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - A tied result requires the user to choose a tie-break candidate or explicitly start a confirmation comparison. The system never averages a tie into a new setting.
 - The final result cannot be accepted until the required confirmation run has succeeded and passed validation, except when the user selects a documented opt-out and the session report records it.
 
-- [ ] Write tests test_boundary_winner_explains_extension, test_interior_winner_explains_narrowing, test_tie_requires_explicit_resolution, test_acceptance_waits_for_confirmation_run, and test_opt_out_is_recorded.
-- [ ] Run the recommendation UI test file and verify it fails before implementation.
-- [ ] Implement recommendation cards showing previous/current ranges, selected candidate, next range, changed dimensions, fixed values, limits, and exact rationale.
-- [ ] Implement explicit Accept, Refine, Extend Boundary, and Mark Inconclusive actions; hide actions that the current module policy cannot support.
-- [ ] Implement confirmation-run state and ensure failed/canceled confirmation jobs do not unlock profile export.
-- [ ] Run recommendation, ironing, results, and session-resume tests.
-- [ ] Commit as feat: add explainable calibration refinement.
+- [x] Write tests test_boundary_winner_explains_extension, test_interior_winner_explains_narrowing, test_tie_requires_explicit_resolution, test_acceptance_waits_for_confirmation_run, and test_opt_out_is_recorded.
+- [x] Run the recommendation UI test file and verify it fails before implementation.
+- [x] Implement recommendation cards showing previous/current ranges, selected candidate, next range, changed dimensions, fixed values, limits, and exact rationale.
+- [x] Implement explicit Accept, Refine, Extend Boundary, and Mark Inconclusive actions; hide actions that the current module policy cannot support.
+- [x] Implement confirmation-run state and ensure failed/canceled confirmation jobs do not unlock profile export.
+- [x] Run recommendation, ironing, results, and session-resume tests.
+- [x] Commit as feat: add explainable calibration refinement.
 
 ## Task 8: Add Reviewed Profile Export
 
@@ -269,13 +271,13 @@ The concrete types may add fields needed by the implementation, but they must re
 - ExportDraft contains source profile name/hash, new profile name, changed setting keys, old/new values, supporting run and candidate IDs, compatibility warnings, and report paths.
 - ExportResult contains the new profile path, machine-readable session manifest, human-readable Markdown report, and hashes. Writing the draft must not mutate the source profile or Orca config directory.
 
-- [ ] Write tests test_diff_contains_only_accepted_ironing_keys, test_original_profile_bytes_remain_unchanged, test_export_requires_accepted_confirmation_result, test_destination_is_user_selected, and test_manifest_and_report_include_evidence_scope.
-- [ ] Run the export UI test file and verify it fails before implementation.
-- [ ] Implement a review page with source and destination names, exact old/new values, source hash, evidence link, known trade-offs, confirmation status, and a browsable destination.
-- [ ] Implement JSON preset and Markdown report export; enable import-bundle export only for an adapter version already verified by the Orca integration tests.
-- [ ] Implement exact import instructions for the detected Orca version; do not auto-import or activate the exported preset.
-- [ ] Run export UI, profile export, and full unit tests.
-- [ ] Commit as feat: add reviewed profile export workflow.
+- [x] Write tests test_diff_contains_only_accepted_ironing_keys, test_original_profile_bytes_remain_unchanged, test_export_requires_accepted_confirmation_result, test_destination_is_user_selected, and test_manifest_and_report_include_evidence_scope.
+- [x] Run the export UI test file and verify it fails before implementation.
+- [x] Implement a review page with source and destination names, exact old/new values, source hash, evidence link, known trade-offs, confirmation status, and a browsable destination.
+- [x] Implement JSON preset and Markdown report export; keep import-bundle export disabled until an adapter version passes the Orca integration tests.
+- [x] Implement import instructions for the detected Orca version; do not auto-import or activate the exported preset.
+- [x] Run export UI, profile export, and full unit tests.
+- [x] Commit as feat: add reviewed profile export workflow.
 
 ## Task 9: Complete Home, Session Management, Accessibility, and Acceptance
 
@@ -292,14 +294,16 @@ The concrete types may add fields needed by the implementation, but they must re
 - Sessions can be opened and resumed; archival hides a session from Home but never deletes its files.
 - Settings contain only application-level choices in v1: workspace root, default export root, diagnostics inclusion choices, and Orca executable/config-root overrides.
 
-- [ ] Write tests test_home_status_matches_persisted_session, test_resume_opens_saved_step, test_archive_preserves_artifacts, and test_settings_survive_restart.
-- [ ] Run the Home/session UI test file and verify it fails before implementation.
-- [ ] Implement recent sessions, resume, archive, settings, and clean recovery for a missing/moved artifact.
-- [ ] Add keyboard traversal, visible focus, accessible names, scaling checks at 100/150/200 percent, and Windows/Linux file-dialog checks.
-- [ ] Run PYTHONPATH=src python -m unittest discover -s tests -v and confirm the headless suite also passes without the gui extra installed.
+- [x] Write tests for persisted Home status, saved-step resume, non-destructive archive, and settings surviving restart.
+- [x] Run the Home/session UI test file and verify it fails before implementation.
+- [x] Implement recent sessions, resume, archive, settings, and recovery messaging for a missing workspace or moved artifact.
+- [x] Add Ctrl+1–4 page navigation, a visible keyboard focus highlight, and explicit control labels.
+- [ ] Verify keyboard traversal with assistive tools, scaling at 100/150/200 percent, and native file dialogs on Windows and Linux.
+- [x] Run `PYTHONPATH=src python -m unittest discover -s tests -v` (headless suite).
+- [x] Confirm the suite passes in an environment without the GUI extra installed (131 passed; one opt-in Orca integration test skipped).
 - [ ] Run the acceptance workflow with an actual supported Orca version: import three profiles, generate and validate a 3x3 ironing run, resume after closing, record results, complete refinement and confirmation, and export a new process profile.
-- [ ] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
-- [ ] Commit as feat: complete calibration workbench GUI.
+- [x] Update README.md with installation, launch, setup, saved-session location, and recovery steps; update docs/IMPLEMENTATION_STATUS.md with completed and blocked gates.
+- [x] Commit as feat: complete calibration workbench GUI.
 
 ## Acceptance Gate
 
