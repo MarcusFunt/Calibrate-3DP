@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Mapping
 
+from calibrate3dp.app.pages.profile_selection_page import ProfileSelectionPage
+from calibrate3dp.app.pages.setup_page import SetupPage
+from calibrate3dp.app.services.profile_service import ProfileService
+
 
 PAGE_LABELS: Mapping[str, str] = {
     "home": "Home",
@@ -62,6 +66,9 @@ class AppShell:
         dpg_module: Any | None = None,
     ) -> None:
         self.services = dict(services or {})
+        self.profile_service = self.services.get("profile_service") or ProfileService()
+        self.profile_selection: Any | None = None
+        self._profile_selection_page: ProfileSelectionPage | None = None
         self.routes = RouteState()
         self._dpg = dpg_module
         self._context_created = False
@@ -136,11 +143,11 @@ class AppShell:
             no_resize=True,
             no_collapse=True,
             no_scrollbar=True,
-            primary_window=True,
         ):
             with dpg.group(horizontal=True):
                 self._build_sidebar()
                 self._build_workspace()
+        dpg.set_primary_window("root_window", True)
 
     def _create_themes(self) -> None:
         dpg = self._dpg
@@ -359,8 +366,8 @@ class AppShell:
             with dpg.child_window(width=-1, height=72, border=True):
                 dpg.add_text("WHAT THIS FIRST UI SLICE INCLUDES", color=(92, 191, 178, 255))
                 dpg.add_text(
-                    "Desktop navigation and page scaffolding. Profile selection, saved sessions, "
-                    "results entry, and export review will be added in later slices.",
+                    "Desktop navigation, Orca setup, read-only profile import, and inherited-value "
+                    "inspection are connected. Session workflow and results review are continuing.",
                     color=(165, 180, 195, 255),
                     wrap=760,
                 )
@@ -395,36 +402,36 @@ class AppShell:
                         dpg.add_spacer(width=18)
 
             dpg.add_spacer(height=20)
-            with dpg.child_window(width=-1, height=214, border=True):
-                dpg.add_text("AVAILABLE MODULE", color=(133, 149, 166, 255))
-                dpg.add_spacer(height=8)
-                dpg.add_text("Ironing Finish", color=(238, 244, 249, 255))
-                dpg.add_text(
-                    "Tune ironing flow and speed with a candidate grid. The planner and Orca "
-                    "slicing path are available in the headless core.",
-                    color=(165, 180, 195, 255),
-                    wrap=760,
-                )
-                dpg.add_spacer(height=10)
-                dpg.add_text(
-                    "Profile selection and session saving are not connected to this page yet.",
-                    color=(225, 180, 112, 255),
-                    wrap=760,
-                )
-                dpg.add_spacer(height=10)
-                dpg.add_button(
-                    label="Profile selection is not available yet",
-                    width=300,
-                    height=38,
-                    enabled=False,
-                )
+            dpg.add_text("ORCA CONNECTION AND PROFILE SOURCES", color=(133, 149, 166, 255))
+            dpg.add_spacer(height=7)
+            setup_page = SetupPage(self.profile_service, dpg)
+            setup_page.render()
+            dpg.add_spacer(height=12)
+
+            self._profile_selection_page = ProfileSelectionPage(
+                self.profile_service,
+                dpg,
+                on_continue=self._on_profile_selection,
+            )
+            setup_page.on_profiles_changed = self._profile_selection_page.refresh
+            self._profile_selection_page.render()
 
             dpg.add_spacer(height=18)
-            dpg.add_text("PLANNED FOR LATER", color=(133, 149, 166, 255))
+            dpg.add_text("OTHER MODULES", color=(133, 149, 166, 255))
             dpg.add_spacer(height=8)
             with dpg.group(horizontal=True):
                 self._add_planned_module_card("Bridge calibration")
                 self._add_planned_module_card("Support interface")
+
+    def _on_profile_selection(self, selection: Any) -> None:
+        """Retain the validated, provenance-bearing baseline for the next step."""
+        self.profile_selection = selection
+        if self._dpg is not None and self._dpg.does_item_exist("profile_selection_message"):
+            self._dpg.set_value(
+                "profile_selection_message",
+                "Profiles are ready for an Ironing Finish session. Module planning and session "
+                "creation are the next workflow step.",
+            )
 
     def _add_planned_module_card(self, name: str) -> None:
         with self._dpg.child_window(width=278, height=90, border=True):

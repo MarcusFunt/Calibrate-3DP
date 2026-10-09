@@ -155,12 +155,12 @@ The concrete types may add fields needed by the implementation, but they must re
 - Each selected preset is displayed with kind, name, scope, source path, source hash, inheritance chain, and per-setting provenance.
 - The continue action emits a complete ProfileSelection only when all three profiles resolve and all module-required values are present.
 
-- [ ] Write tests test_missing_orca_shows_browse_and_diagnostics_actions, test_malformed_json_shows_field_level_error, test_missing_parent_blocks_continue, test_ambiguous_name_requires_scope, and test_effective_values_show_provenance.
-- [ ] Run the profile UI test file and verify the tests fail before implementation.
-- [ ] Implement setup state for detected executable, detected config roots, Orca version, last check, compatibility status, browse actions, recheck, and offline diagnostics export.
-- [ ] Implement JSON and supported bundle import without writing into Orca's config directory; make unsupported bundles display an actionable adapter message.
-- [ ] Implement the three profile cards, inherited-value inspector, and a baseline summary that reads imported values rather than asking users to transcribe them.
-- [ ] Run profile UI tests and existing profile resolver/export tests.
+- [x] Write tests test_missing_orca_shows_browse_and_diagnostics_actions, test_malformed_json_shows_field_level_error, test_missing_parent_blocks_continue, test_ambiguous_name_requires_scope, and test_effective_values_show_provenance.
+- [x] Run the profile UI test file and verify the tests fail before implementation.
+- [x] Implement setup state for detected executable, detected config roots, Orca version, last check, compatibility status, browse actions, recheck, and offline diagnostics export.
+- [x] Implement JSON and supported bundle import without writing into Orca's config directory; make unsupported bundles display an actionable adapter message.
+- [x] Implement the three profile cards, inherited-value inspector, and a baseline summary that reads imported values rather than asking users to transcribe them.
+- [x] Run profile UI tests and existing profile resolver/export tests.
 - [ ] Commit as feat: add Orca profile setup and selection.
 
 ## Task 4: Add Module Choice, Baseline Summary, and Experiment Review
