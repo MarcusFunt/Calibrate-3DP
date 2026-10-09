@@ -549,7 +549,7 @@ class ProfileService:
             return self._executable_detector()
         configured = os.environ.get("ORCA_SLICER_EXE")
         candidates: list[Path] = [Path(configured).expanduser()] if configured else []
-        for command in ("OrcaSlicer", "orca-slicer", "orcaslicer"):
+        for command in ("orca-slicer-console", "OrcaSlicer", "orca-slicer", "orcaslicer"):
             found = shutil.which(command)
             if found:
                 candidates.append(Path(found))
@@ -557,7 +557,11 @@ class ProfileService:
             for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
                 base = os.environ.get(variable)
                 if base:
-                    candidates.append(Path(base) / "OrcaSlicer" / "orca-slicer.exe")
+                    install = Path(base) / "OrcaSlicer"
+                    candidates.extend((
+                        install / "orca-slicer-console.exe",
+                        install / "orca-slicer.exe",
+                    ))
         elif sys_platform_is_macos():
             candidates.append(
                 Path("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")
