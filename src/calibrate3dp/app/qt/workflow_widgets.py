@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
 from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
+from calibrate3dp.app.qt.calibration_status import CalibrationStatusPanel
 from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
 from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
 from calibrate3dp.app.services.library_service import LibraryService
@@ -321,6 +322,7 @@ class PrinterWorkspacePage(QWidget):
         saved_configuration_row.addWidget(self.open_configuration_button)
         layout.addLayout(saved_configuration_row)
         self.material_choice.currentIndexChanged.connect(self._refresh_saved_configurations)
+        self.material_choice.currentIndexChanged.connect(self._refresh_calibration_state)
 
         actions = QHBoxLayout()
         self.generate_button = QPushButton("Configure grouped ironing sweep")
@@ -338,6 +340,8 @@ class PrinterWorkspacePage(QWidget):
         self.state.setObjectName("mutedStatus")
         self.state.setWordWrap(True)
         layout.addWidget(self.state)
+        self.calibration_status_panel = CalibrationStatusPanel(self)
+        layout.addWidget(self.calibration_status_panel)
 
         self.run_table = QTableWidget(0, 3)
         self.run_table.setHorizontalHeaderLabels(("Plate code", "Run state", "Created"))
@@ -349,6 +353,7 @@ class PrinterWorkspacePage(QWidget):
         if self.library is None or self.generation is None:
             self.generate_button.setEnabled(False)
             self.add_material_button.setEnabled(False)
+        self._refresh_calibration_state()
 
     def show_printer(self, printer: Any | None) -> None:
         if printer is None:
@@ -356,6 +361,7 @@ class PrinterWorkspacePage(QWidget):
             self.printer_context.setText("No printer is selected.")
             self.material_choice.clear()
             self.run_table.setRowCount(0)
+            self._refresh_calibration_state()
             return
         self.printer_id = printer.printer_id
         self.heading.setText(printer.name)
@@ -375,6 +381,7 @@ class PrinterWorkspacePage(QWidget):
 
     def refresh(self) -> None:
         if self.library is None or self.printer_id is None:
+            self._refresh_calibration_state()
             return
         materials = self.library.list_materials()
         selected = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
@@ -399,9 +406,42 @@ class PrinterWorkspacePage(QWidget):
                 self.run_table.setItem(row, column, QTableWidgetItem(value))
             self.run_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, record.run_id)
         self._refresh_saved_configurations()
-        self.generate_button.setEnabled(bool(materials) and self.generation is not None)
+        self._refresh_calibration_state()
         if not materials:
             self.state.setText("Add a filament profile before generating a calibration run.")
+
+    def _refresh_calibration_state(self, *_args) -> None:
+        material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
+        service = self.calibration_state_service
+        if service is None:
+            self.calibration_status_panel.set_unavailable(
+                "Calibration state service is unavailable."
+            )
+            self.generate_button.setEnabled(False)
+            return
+        try:
+            states = service.states_for(
+                self.printer_id,
+                str(material_id) if material_id else None,
+            )
+        except Exception as exc:
+            self.calibration_status_panel.set_unavailable(
+                f"Calibration status could not be refreshed: {exc}"
+            )
+            self.generate_button.setEnabled(False)
+            return
+        self.calibration_status_panel.set_states(states)
+        ironing = next(
+            (item for item in states if item.calibration_id == "ironing"),
+            None,
+        )
+        self.generate_button.setEnabled(
+            self.generation is not None
+            and self._task is None
+            and bool(material_id)
+            and ironing is not None
+            and ironing.can_start
+        )
 
     def _request_add_material(self) -> None:
         if self.printer_id is not None:
@@ -418,6 +458,7 @@ class PrinterWorkspacePage(QWidget):
                 self.library, run_id, self, generation_service=self.generation
             )
             dialog.exec()
+            self.refresh()
 
     def _start_generation(self) -> None:
         material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
@@ -490,9 +531,9 @@ class PrinterWorkspacePage(QWidget):
         task.signals.completed.connect(self._generation_completed)
         task.signals.failed.connect(self._generation_failed)
         self._task = task
-        self.generate_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.state.setText("Generating and validating the grouped plate with OrcaSlicer…")
+        self._refresh_calibration_state()
         QThreadPool.globalInstance().start(task)
 
     def _cancel_generation(self) -> None:
@@ -506,7 +547,6 @@ class PrinterWorkspacePage(QWidget):
         self._task = None
         self._cancel_event = None
         self.cancel_button.setEnabled(False)
-        self.generate_button.setEnabled(self.material_choice.count() > 0)
         self.refresh()
         if record.status == "settings_validated":
             validation = record.validation
@@ -544,7 +584,7 @@ class PrinterWorkspacePage(QWidget):
         self._task = None
         self._cancel_event = None
         self.cancel_button.setEnabled(False)
-        self.generate_button.setEnabled(self.material_choice.count() > 0)
+        self.refresh()
         self.state.setText(f"Generation failed: {message}")
         self.run_finished.emit()
 
