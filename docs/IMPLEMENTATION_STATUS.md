@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-This status is updated on 2026-10-10. The primary checkout at `D:\projects\Calibrate-3DP` is at HEAD `3c3ac2c` (`Add build123d ironing plate geometry`), and this file describes that checkout. The `origin/main` and managed `codex/build123d-migration` references in earlier status/history are historical. Current local Orca setup evidence is recorded below and in `docs/PROGRESS_HISTORY.md`.
+This status is updated on 2026-10-10. The primary checkout at `D:\projects\Calibrate-3DP` is at HEAD `a835c81` (`Refresh Qt workflow UX and navigation`), and this file describes that checkout. The managed `codex/build123d-migration` references in earlier status/history are historical. Current local Orca setup evidence is recorded below and in `docs/PROGRESS_HISTORY.md`.
 
 The target remains the manual, local-first product in [V1_GOAL.md](V1_GOAL.md). Passing one profile/version configuration does not establish a general support claim.
 

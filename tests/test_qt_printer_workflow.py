@@ -167,16 +167,52 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         self.assertTrue(window.workspace_page.generate_button.isEnabled())
 
         completed = QEventLoop()
-        window.workspace_page.run_finished.connect(completed.quit)
-        QTimer.singleShot(5000, completed.quit)
+        generation_finished = []
+        window.workspace_page.run_finished.connect(
+            lambda: (generation_finished.append(True), completed.quit())
+        )
+        review_errors = []
+
         def accept_review():
             dialog = window.workspace_page.review_dialog
-            self.assertIsNotNone(dialog)
-            dialog._save_configuration()
-            dialog._generate_saved_configuration()
-        QTimer.singleShot(0, accept_review)
-        window.workspace_page.generate_button.click()
-        completed.exec()
+            if dialog is None:
+                review_errors.append(AssertionError("Configuration review did not open."))
+                if completed.isRunning():
+                    completed.quit()
+                return
+            try:
+                self.assertTrue(dialog.save_button.isEnabled(), dialog.status.text())
+                dialog._save_configuration()
+                self.assertTrue(dialog.generate_button.isEnabled(), dialog.status.text())
+                dialog._generate_saved_configuration()
+                self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
+            except Exception as exc:
+                review_errors.append(exc)
+                dialog.reject()
+
+        review_timeout = QTimer()
+        review_timeout.setSingleShot(True)
+        review_timeout.timeout.connect(
+            lambda: window.workspace_page.review_dialog.reject()
+            if window.workspace_page.review_dialog is not None else None
+        )
+        review_timeout.start(5000)
+        with patch(
+            "calibrate3dp.app.qt.experiment_review._geometry_backend_ready",
+            return_value=True,
+        ):
+            QTimer.singleShot(0, accept_review)
+            window.workspace_page.generate_button.click()
+        review_timeout.stop()
+        self.QApplication.processEvents()
+        if review_errors:
+            raise review_errors[0]
+        if not generation_finished:
+            QTimer.singleShot(5000, completed.quit)
+            completed.exec()
+        if review_errors:
+            raise review_errors[0]
+        self.assertTrue(generation_finished, "Fake generation did not finish within five seconds.")
         self.assertIn("Print-ready: no", window.workspace_page.state.text())
         self.assertIn("Geometry: validated", window.workspace_page.state.text())
         self.assertIn("A–I labels and plate code are in the mesh", window.workspace_page.state.text())
@@ -199,7 +235,11 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         self.assertEqual(len(opened_details), 1)
         self.assertEqual(opened_details[0].run.run_id, run.run_id)
 
-    def test_configuration_dialog_previews_and_saves_the_reviewed_candidate_map(self) -> None:
+    @patch(
+        "calibrate3dp.app.qt.experiment_review._geometry_backend_ready",
+        return_value=True,
+    )
+    def test_configuration_dialog_previews_and_saves_the_reviewed_candidate_map(self, _backend_ready) -> None:
         from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
         from calibrate3dp.app.qt.workflow_widgets import AddMaterialDialog, AddPrinterDialog
 
@@ -215,6 +255,7 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         material = material_dialog.record
         generation = GroupedOrcaGenerationService(self.library, cli_provider=lambda: None)
         review = generation.prepare_ironing_configuration(printer.printer_id, material.material_id)
+        # This test exercises the real configuration review/save flow, not CAD execution.
         dialog = ExperimentConfigurationDialog(review, generation)
 
         self.assertEqual(dialog.candidate_table.rowCount(), 9)

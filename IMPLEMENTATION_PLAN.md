@@ -37,7 +37,7 @@
 
 The project foundation at origin/main commit `5ef7c4cf04a9b5da84bb570c9276cca98d1427d9` included profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. Since then, the Qt shell replaced the old launch path; some page adapters remain temporarily for workflow logic and regression coverage.
 
-The current primary checkout is `D:\projects\Calibrate-3DP` at HEAD `3c3ac2c`; current implementation state is summarized in `docs/IMPLEMENTATION_STATUS.md`. Historical branch/worktree baselines recorded above remain dated evidence, not the current checkout. The configured local Orca executable is the official v2.4.2 Windows portable binary installed under `D:\Programs\OrcaSlicer\cli-v2.4.2`; a hash-pinned adapter contract handles its silent help output, while the absent CLI banner remains explicit. A real-slice test reconciles its executable fingerprint with G-code identity for one Windows/profile combination. Exact binary identity and passed sample/layout checks do not establish a support-matrix entry or print readiness; physical acceptance, complete G-code validation, and broader support remain open.
+The current primary checkout is `D:\projects\Calibrate-3DP` at HEAD `a835c81`; current implementation state is summarized in `docs/IMPLEMENTATION_STATUS.md`. Historical branch/worktree baselines recorded above remain dated evidence, not the current checkout. The configured local Orca executable is the official v2.4.2 Windows portable binary installed under `D:\Programs\OrcaSlicer\cli-v2.4.2`; a hash-pinned adapter contract handles its silent help output, while the absent CLI banner remains explicit. A real-slice test reconciles its executable fingerprint with G-code identity for one Windows/profile combination. Exact binary identity and passed sample/layout checks do not establish a support-matrix entry or print readiness; physical acceptance, complete G-code validation, and broader support remain open.
 
 ---
 
@@ -362,7 +362,7 @@ The current primary checkout is `D:\projects\Calibrate-3DP` at HEAD `3c3ac2c`; c
 - [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. The workspace now also presents the service-evaluated calibration state.
 - [x] Add a global printer/material context header and plate lookup; group workspace content into Overview, Experiments, and Printer and materials tabs, with text-and-icon workflow states and higher-contrast controls.
 - [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
-- [x] Test calibration status transitions and available workflow rendering with offscreen Qt tests using a fake state service/repository and existing Orca setup fixtures.
+- [x] Test calibration status transitions, available workflow rendering, and fake async generation through six-character plate lookup with offscreen Qt tests using a fake state service/repository and existing Orca setup fixtures.
 
 ### Task 15: Complete acceptance matrix and release evidence
 
