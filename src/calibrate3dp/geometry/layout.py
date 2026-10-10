@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -84,21 +84,55 @@ class PlateLayout:
     bounds: PlateBounds
     voxel_mm: float
     findings: tuple[str, ...]
+    identifier_region: Rect2D | None = None
+    identifier_corner: str | None = None
+    identifier_tabs: tuple[Rect2D, ...] = ()
+
+    @property
+    def named_feature_regions(self) -> tuple[tuple[str, Rect2D], ...]:
+        bodies = tuple(
+            (f"Sample-{p.label}", Rect2D(p.x_mm, p.y_mm, p.x_mm + p.width_mm, p.y_mm + p.depth_mm))
+            for p in self.sample_placements
+        )
+        rails = tuple(
+            (f"Plate-Frame rail {index + 1}", region)
+            for index, region in enumerate(self.frame_rails)
+        )
+        connectors = tuple(
+            (f"Sample-{item.sample_label} connector {item.orientation}", item.rectangle)
+            for item in self.connectors
+        )
+        labels = tuple(
+            (f"Sample-{label} label area", region)
+            for label, region in self.label_regions
+        )
+        if self.identifier_region is not None:
+            return (
+                *bodies,
+                *rails,
+                *connectors,
+                *labels,
+                ("Plate-Identifier plaque", self.identifier_region),
+                *(
+                    (f"Plate-Identifier attachment tab {index + 1}", region)
+                    for index, region in enumerate(self.identifier_tabs)
+                ),
+            )
+        return (
+            *bodies,
+            *rails,
+            *connectors,
+            *labels,
+            ("Plate-Frame code support", self.code_support_region),
+            *(
+                (f"Plate-Frame code glyph {character}", region)
+                for character, region in self.code_regions
+            ),
+        )
 
     @property
     def feature_regions(self) -> tuple[Rect2D, ...]:
-        bodies = tuple(
-            Rect2D(p.x_mm, p.y_mm, p.x_mm + p.width_mm, p.y_mm + p.depth_mm)
-            for p in self.sample_placements
-        )
-        return (
-            *bodies,
-            *self.frame_rails,
-            *(connector.rectangle for connector in self.connectors),
-            *(region for _label, region in self.label_regions),
-            self.code_support_region,
-            *(region for _character, region in self.code_regions),
-        )
+        return tuple(region for _name, region in self.named_feature_regions)
 
 
 @dataclass(frozen=True)
@@ -119,6 +153,25 @@ class PlateLayoutRequest:
     voxel_mm: float = 0.4
     label_pixel_mm: float = 0.8
     code_pixel_mm: float = 0.8
+    geometry_backend: str = "stdlib-voxel"
+    geometry_backend_version: str = "1"
+    identifier_corner: str = "front_left"
+    label_pocket_width_mm: float = 12.0
+    label_pocket_depth_mm: float = 8.0
+    label_pocket_depth_z_mm: float = 0.8
+    label_text_size_mm: float = 5.2
+    identifier_width_mm: float = 42.0
+    identifier_depth_mm: float = 14.0
+    identifier_thickness_mm: float = 1.6
+    identifier_text_size_mm: float = 4.5
+    identifier_relief_mm: float = 0.5
+    identifier_tab_width_mm: float = 1.2
+    mesh_linear_tolerance_mm: float = 0.05
+    mesh_angular_tolerance_rad: float = 0.1
+    vertex_weld_tolerance_mm: float = 1e-7
+    recipe_id: str = "ironing.flat_coupon"
+    recipe_version: str = "2"
+    layout_version: str = "2"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "samples", tuple(self.samples))
@@ -147,15 +200,17 @@ def require_layout_fits_printable_area(
         raise PlateLayoutError("layout translation must contain two finite numbers") from exc
     if not math.isfinite(dx) or not math.isfinite(dy):
         raise PlateLayoutError("layout translation must contain two finite numbers")
-    for feature in layout.feature_regions:
+    for feature_name, feature in layout.named_feature_regions:
         translated = Rect2D(
             feature.min_x + dx, feature.min_y + dy,
             feature.max_x + dx, feature.max_y + dy,
         )
         if not _rect_inside_polygon(translated, polygon):
-            raise PlateLayoutError("connected plate exceeds the selected printable area")
+            raise PlateLayoutError(
+                f"connected plate feature {feature_name} exceeds the selected printable area"
+            )
         if any(_rect_intersects_polygon(translated, keepout) for keepout in obstacles):
-            raise PlateLayoutError("connected plate intersects a keep-out")
+            raise PlateLayoutError(f"connected plate feature {feature_name} intersects a keep-out")
 
 
 def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
@@ -327,8 +382,117 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         voxel_mm=request.voxel_mm,
         findings=(f"{len(labels)} labeled sample object(s); connectors terminate at the shared frame surface.",),
     )
+    if request.geometry_backend == "build123d" and request.geometry_backend_version == "1":
+        layout = _build123d_identifier_layout(layout, request)
+    elif (request.geometry_backend, request.geometry_backend_version) != ("stdlib-voxel", "1"):
+        raise PlateLayoutError("unsupported geometry backend or version")
     require_layout_fits_printable_area(layout, request.printable_polygon, request.keep_outs)
     return layout
+
+
+def _build123d_identifier_layout(layout: PlateLayout, request: PlateLayoutRequest) -> PlateLayout:
+    if (request.recipe_id, request.recipe_version, request.layout_version) != (
+        "ironing.flat_coupon", "2", "2"
+    ):
+        raise PlateLayoutError("unsupported build123d recipe or layout version")
+    corners = {"front_left", "front_right", "back_left", "back_right"}
+    if request.identifier_corner not in corners:
+        raise PlateLayoutError("identifier_corner must be front_left, front_right, back_left, or back_right")
+    for name in (
+        "label_pocket_width_mm", "label_pocket_depth_mm", "label_pocket_depth_z_mm",
+        "label_text_size_mm", "identifier_width_mm", "identifier_depth_mm",
+        "identifier_thickness_mm", "identifier_text_size_mm", "identifier_relief_mm",
+        "identifier_tab_width_mm", "mesh_linear_tolerance_mm",
+        "mesh_angular_tolerance_rad", "vertex_weld_tolerance_mm",
+    ):
+        value = getattr(request, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise PlateLayoutError(f"{name} must be finite positive")
+    if request.label_pocket_width_mm + 4.0 > request.specimen_width_mm or request.label_pocket_depth_mm + 4.0 > request.specimen_depth_mm:
+        raise PlateLayoutError("underside label pocket must leave at least 2 mm of specimen land on every side")
+    frame_span = layout.bounds.max_x - layout.bounds.min_x
+    effective_plaque_width = min(request.identifier_width_mm, frame_span - 2 * request.frame_width_mm)
+    if effective_plaque_width < 20.0:
+        raise PlateLayoutError("connected frame is too narrow for a readable identifier plaque")
+    if request.identifier_tab_width_mm > effective_plaque_width / 3:
+        raise PlateLayoutError("identifier attachment tabs are too wide for the plaque")
+
+    # Reserve room on the front side by moving the complete specimen grid
+    # inward. Back-side plaque placement uses the existing positive margin.
+    dy = (
+        request.identifier_depth_mm + request.frame_width_mm
+        if request.identifier_corner.startswith("front_") else 0.0
+    )
+
+    def moved(rectangle: Rect2D) -> Rect2D:
+        return Rect2D(rectangle.min_x, rectangle.min_y + dy, rectangle.max_x, rectangle.max_y + dy)
+
+    placements = tuple(replace(item, y_mm=item.y_mm + dy) for item in layout.sample_placements)
+    rails = tuple(moved(item) for item in layout.frame_rails)
+    connectors = tuple(replace(item, rectangle=moved(item.rectangle)) for item in layout.connectors)
+    min_x = min(item.min_x for item in rails)
+    max_x = max(item.max_x for item in rails)
+    min_y = min(item.min_y for item in rails)
+    max_y = max(item.max_y for item in rails)
+    if request.identifier_corner.endswith("left"):
+        plaque_min_x = min_x + request.frame_width_mm
+    else:
+        plaque_min_x = max_x - request.frame_width_mm - effective_plaque_width
+    plaque_max_x = plaque_min_x + effective_plaque_width
+    if request.identifier_corner.startswith("front_"):
+        plaque_max_y = min_y - request.frame_width_mm
+        plaque_min_y = plaque_max_y - request.identifier_depth_mm
+        tab_min_y, tab_max_y = plaque_max_y, min_y
+    else:
+        plaque_min_y = max_y + request.frame_width_mm
+        plaque_max_y = plaque_min_y + request.identifier_depth_mm
+        tab_min_y, tab_max_y = max_y, plaque_min_y
+    identifier = Rect2D(plaque_min_x, plaque_min_y, plaque_max_x, plaque_max_y)
+    offset = effective_plaque_width / 3
+    tabs = tuple(
+        Rect2D(
+            plaque_min_x + index * offset + (offset - request.identifier_tab_width_mm) / 2,
+            tab_min_y,
+            plaque_min_x + index * offset + (offset + request.identifier_tab_width_mm) / 2,
+            tab_max_y,
+        )
+        for index in (0, 2)
+    )
+    label_regions = tuple(
+        (
+            placement.label,
+            Rect2D(
+                placement.x_mm + (placement.width_mm - request.label_pocket_width_mm) / 2,
+                placement.y_mm + (placement.depth_mm - request.label_pocket_depth_mm) / 2,
+                placement.x_mm + (placement.width_mm + request.label_pocket_width_mm) / 2,
+                placement.y_mm + (placement.depth_mm + request.label_pocket_depth_mm) / 2,
+            ),
+        )
+        for placement in placements
+    )
+    updated_bounds = PlateBounds(
+        min_x=min(min_x, identifier.min_x),
+        min_y=min(min_y - dy, identifier.min_y),
+        min_z=0.0,
+        max_x=max(max_x, identifier.max_x),
+        max_y=max(max_y, identifier.max_y),
+        max_z=max(layout.bounds.max_z, request.identifier_thickness_mm + request.identifier_relief_mm),
+    )
+    updated = replace(
+        layout,
+        sample_placements=placements,
+        frame_rails=rails,
+        connectors=connectors,
+        label_regions=label_regions,
+        code_regions=(),
+        code_support_region=identifier,
+        bounds=updated_bounds,
+        identifier_region=identifier,
+        identifier_corner=request.identifier_corner,
+        identifier_tabs=tabs,
+        findings=(*layout.findings, "A separate top-labeled corner plaque is connected to the frame by two declared breakaway tabs."),
+    )
+    return updated
 
 
 def _outer_edge(start: float, dimension: float, pitch: float, clearance: float, rail_width: float, count: int) -> float:

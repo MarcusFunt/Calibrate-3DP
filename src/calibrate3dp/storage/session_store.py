@@ -20,7 +20,7 @@ from calibrate3dp.app.models import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 SESSION_PAYLOAD_SCHEMA_VERSION = 1
 PROFILE_SELECTION_RELATIVE_PATH = "profiles/profile-selection.json"
 
@@ -473,6 +473,68 @@ class SessionRepository:
                     "CREATE INDEX run_exports_run_idx ON run_exports (run_id, created_at_utc DESC)"
                 )
                 connection.execute("PRAGMA user_version = 3")
+                connection.commit()
+                version = 3
+            if version == 3:
+                connection.execute("BEGIN IMMEDIATE")
+                # Schema 3 constrained frozen experiment configurations to
+                # payload schema 1. Rebuild the two linked tables so schema 2
+                # can be stored while existing v1 JSON snapshots remain exact.
+                connection.execute("ALTER TABLE run_config_links RENAME TO run_config_links_schema3")
+                connection.execute("ALTER TABLE experiment_configs RENAME TO experiment_configs_schema3")
+                connection.execute(
+                    """CREATE TABLE experiment_configs_v4 (
+                        config_id TEXT PRIMARY KEY,
+                        experiment_id TEXT NOT NULL,
+                        revision_no INTEGER NOT NULL CHECK (revision_no > 0),
+                        schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2)),
+                        created_at_utc TEXT NOT NULL,
+                        input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+                        config_json TEXT NOT NULL,
+                        UNIQUE (experiment_id, revision_no)
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO experiment_configs_v4
+                       SELECT config_id, experiment_id, revision_no, schema_version,
+                              created_at_utc, input_sha256, config_json
+                       FROM experiment_configs_schema3"""
+                )
+                connection.execute(
+                    """CREATE TABLE run_config_links_v4 (
+                        run_id TEXT PRIMARY KEY REFERENCES calibration_runs(run_id),
+                        config_id TEXT NOT NULL REFERENCES experiment_configs_v4(config_id),
+                        parent_run_id TEXT REFERENCES calibration_runs(run_id),
+                        parent_assessment_revision_id TEXT,
+                        parent_candidate_id TEXT,
+                        relation_type TEXT NOT NULL CHECK (
+                            relation_type IN ('initial', 'refinement', 'confirmation')
+                        ),
+                        CHECK (
+                            (relation_type = 'initial' AND parent_run_id IS NULL
+                                AND parent_assessment_revision_id IS NULL AND parent_candidate_id IS NULL) OR
+                            (relation_type IN ('refinement', 'confirmation') AND parent_run_id IS NOT NULL
+                                AND parent_assessment_revision_id IS NOT NULL AND parent_candidate_id IS NOT NULL)
+                        ),
+                        FOREIGN KEY (parent_run_id, parent_assessment_revision_id)
+                            REFERENCES run_assessment_revisions(run_id, assessment_revision_id)
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO run_config_links_v4
+                       SELECT run_id, config_id, parent_run_id,
+                              parent_assessment_revision_id, parent_candidate_id, relation_type
+                       FROM run_config_links_schema3"""
+                )
+                connection.execute("DROP TABLE run_config_links_schema3")
+                connection.execute("DROP TABLE experiment_configs_schema3")
+                connection.execute("ALTER TABLE experiment_configs_v4 RENAME TO experiment_configs")
+                connection.execute("ALTER TABLE run_config_links_v4 RENAME TO run_config_links")
+                connection.execute(
+                    "CREATE INDEX experiment_configs_revision_idx "
+                    "ON experiment_configs (experiment_id, revision_no DESC)"
+                )
+                connection.execute("PRAGMA user_version = 4")
                 connection.commit()
         except Exception:
             connection.rollback()

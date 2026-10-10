@@ -14,6 +14,13 @@ _GEOMETRY_OPTION_KEYS = (
     "margin_mm", "specimen_width_mm", "specimen_depth_mm", "specimen_height_mm",
     "gap_mm", "connector_width_mm", "connector_height_mm", "connector_gap_mm",
     "frame_width_mm", "voxel_mm", "label_pixel_mm", "code_pixel_mm",
+    "geometry_backend", "geometry_backend_version", "identifier_corner",
+    "label_pocket_width_mm", "label_pocket_depth_mm", "label_pocket_depth_z_mm",
+    "label_text_size_mm", "identifier_width_mm", "identifier_depth_mm",
+    "identifier_thickness_mm", "identifier_text_size_mm", "identifier_relief_mm",
+    "identifier_tab_width_mm", "mesh_linear_tolerance_mm",
+    "mesh_angular_tolerance_rad", "vertex_weld_tolerance_mm",
+    "recipe_id", "recipe_version", "layout_version",
 )
 
 
@@ -26,7 +33,9 @@ def grouped_ironing_layout_request(
     """Build the exact validated layout request used by preview and mesh generation."""
     if not 1 <= len(plan.candidates) <= 9:
         raise ValueError("connected grouped plate generation supports one to nine candidates")
-    options = dict(default_layout_options() if layout_options is None else layout_options)
+    options = default_layout_options()
+    if layout_options is not None:
+        options.update(layout_options)
     if options.get("strategy") != "connected-grid" or options.get("rows") != 3 or options.get("columns") != 3:
         raise ValueError("unsupported grouped ironing layout strategy")
     return PlateLayoutRequest(

@@ -45,7 +45,7 @@ The active implementation worktree `codex/v1-design-orca-qt` is based on `origin
 
 ### Preflight design gate: Evaluate the experiment configuration and geometry proposal
 
-**Status:** Partially decided for the first grouped ironing workflow on 2026-10-10. Versioned profile/plan/sample snapshots are stored in SQLite, generated run artifacts remain in per-run folders with hashes, and standard-library 3MF/voxel adapters implement object-level settings and connected specimens. After a reviewer found Orca's default auto-arrange had separated object toolpaths, the adapter now passes `--arrange 0 --orient 0` and the saved-run service verifies one shared layout in sliced G-code. The real Orca gate passes on one local executable/profile set. Physical readability/handling, the full experiment compiler contract, and the supported layout/version matrix remain open.
+**Status:** The bounded grouped-ironing workflow has scoped geometry decisions for both schema versions. Schema v1 retains its original standard-library voxel geometry; new schema-v2 configs select pinned `build123d@1` and `ironing.flat_coupon@2` behind an optional install extra. The first-party Orca 3MF adapter retains sample overrides and validates shared layout and feature toolpaths on one local executable/profile set. Physical readability/handling, the full experiment compiler contract, and the supported layout/version matrix remain open. See `docs/superpowers/plans/2026-10-10-build123d-geometry.md` and `docs/PROGRESS_HISTORY.md` for exact evidence.
 
 **Files:**
 - Read/update: docs/EXPERIMENT_CONFIGURATION_PROPOSAL.md

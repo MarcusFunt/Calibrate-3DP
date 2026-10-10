@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -125,11 +126,98 @@ class LibraryRepositoryTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT session_id, payload_json FROM sessions").fetchone(), ("legacy-session", '{"schema_version":1}'))
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             connection.close()
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
             self.assertTrue({
                 "printers", "materials", "calibration_runs", "experiment_configs",
                 "run_config_links", "run_assessment_revisions", "run_decisions", "run_exports",
             } <= tables)
+
+    def test_schema_v3_config_migration_preserves_v1_and_accepts_v2_snapshots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = LibraryRepository(SessionRepository(root))
+            _printer, _material, run = _records(root)
+            selection = run.profiles.with_source_hashes({
+                "printer": "a" * 64,
+                "process": "b" * 64,
+                "filament": "c" * 64,
+            })
+            plan = ExperimentService().create_initial("ironing", selection)
+            old_options = default_layout_options()
+            v1_keys = {
+                "strategy", "rows", "columns", "geometry_backend", "geometry_backend_version",
+                "margin_mm", "specimen_width_mm", "specimen_depth_mm", "specimen_height_mm",
+                "gap_mm", "connector_width_mm", "connector_height_mm", "connector_gap_mm",
+                "frame_width_mm", "voxel_mm", "label_pixel_mm", "code_pixel_mm",
+            }
+            legacy_options = {key: value for key, value in old_options.items() if key in v1_keys}
+            legacy_options["geometry_backend"] = "stdlib-voxel"
+            legacy = SavedExperimentConfiguration(
+                "config-legacy", "experiment-legacy", 1,
+                "printer-1", "material-1", selection, plan, legacy_options,
+                "2026-10-10T12:00:00Z", schema_version=1,
+            )
+            repository.save_configuration(legacy)
+
+            connection = sqlite3.connect(root / "sessions.sqlite3")
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("ALTER TABLE run_config_links RENAME TO run_config_links_v4")
+            connection.execute("ALTER TABLE experiment_configs RENAME TO experiment_configs_v4")
+            connection.execute(
+                """CREATE TABLE experiment_configs (
+                    config_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    revision_no INTEGER NOT NULL CHECK (revision_no > 0),
+                    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                    created_at_utc TEXT NOT NULL,
+                    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+                    config_json TEXT NOT NULL,
+                    UNIQUE (experiment_id, revision_no)
+                )"""
+            )
+            connection.execute(
+                """INSERT INTO experiment_configs
+                   SELECT config_id, experiment_id, revision_no, schema_version,
+                          created_at_utc, input_sha256, config_json
+                   FROM experiment_configs_v4"""
+            )
+            connection.execute(
+                """CREATE TABLE run_config_links (
+                    run_id TEXT PRIMARY KEY REFERENCES calibration_runs(run_id),
+                    config_id TEXT NOT NULL REFERENCES experiment_configs(config_id),
+                    parent_run_id TEXT REFERENCES calibration_runs(run_id),
+                    parent_assessment_revision_id TEXT,
+                    parent_candidate_id TEXT,
+                    relation_type TEXT NOT NULL CHECK (relation_type IN ('initial','refinement','confirmation')),
+                    FOREIGN KEY (parent_run_id, parent_assessment_revision_id)
+                        REFERENCES run_assessment_revisions(run_id, assessment_revision_id)
+                )"""
+            )
+            connection.execute("DROP TABLE run_config_links_v4")
+            connection.execute("DROP TABLE experiment_configs_v4")
+            connection.execute("CREATE INDEX experiment_configs_revision_idx ON experiment_configs (experiment_id, revision_no DESC)")
+            connection.execute("PRAGMA user_version = 3")
+            connection.commit()
+            connection.close()
+
+            migrated = LibraryRepository(SessionRepository(root))
+            self.assertEqual(migrated.get_configuration(legacy.config_id), legacy)
+            v2 = replace(
+                legacy,
+                config_id="config-new-v2",
+                experiment_id="experiment-new-v2",
+                layout_options=default_layout_options(),
+                schema_version=2,
+            )
+            migrated.save_configuration(v2)
+            self.assertEqual(migrated.get_configuration(v2.config_id), v2)
+            connection = sqlite3.connect(root / "sessions.sqlite3")
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                connection.execute("SELECT schema_version FROM experiment_configs ORDER BY schema_version").fetchall(),
+                [(1,), (2,)],
+            )
+            connection.close()
 
     def test_v2_migration_preserves_populated_printer_material_and_run_rows(self):
         with tempfile.TemporaryDirectory() as temp:

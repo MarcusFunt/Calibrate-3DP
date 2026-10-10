@@ -36,6 +36,10 @@ def _request(**changes):
     return PlateLayoutRequest(**values)
 
 
+def _build123d_request(**changes):
+    return _request(geometry_backend="build123d", geometry_backend_version="1", **changes)
+
+
 class PlateLayoutTests(unittest.TestCase):
     def test_nine_samples_get_deterministic_a_to_i_positions_inside_plate_bounds(self):
         request = _request()
@@ -81,6 +85,29 @@ class PlateLayoutTests(unittest.TestCase):
     def test_rejects_bed_too_small_for_full_plate_and_label_overhang(self):
         with self.assertRaisesRegex(PlateLayoutError, "printable area"):
             layout_plate(_request(printable_polygon=((0, 0), (100, 0), (100, 100), (0, 100))))
+
+    def test_reports_when_grid_fits_but_corner_identifier_plaque_does_not(self):
+        full = layout_plate(_build123d_request())
+        plaque = full.identifier_region
+        self.assertIsNotNone(plaque)
+        printable_polygon = (
+            (0, plaque.max_y + 0.01),
+            (220, plaque.max_y + 0.01),
+            (220, full.bounds.max_y + 1),
+            (0, full.bounds.max_y + 1),
+        )
+
+        with self.assertRaisesRegex(PlateLayoutError, "Plate-Identifier plaque.*printable area"):
+            layout_plate(_build123d_request(printable_polygon=printable_polygon))
+
+    def test_reports_a_keep_out_that_hits_only_the_identifier_plaque(self):
+        full = layout_plate(_build123d_request())
+        plaque = full.identifier_region
+        keepout = ((plaque.min_x + 1, plaque.min_y + 1), (plaque.min_x + 2, plaque.min_y + 1),
+                   (plaque.min_x + 2, plaque.min_y + 2), (plaque.min_x + 1, plaque.min_y + 2))
+
+        with self.assertRaisesRegex(PlateLayoutError, "Plate-Identifier plaque.*keep-out"):
+            layout_plate(_build123d_request(keep_outs=(keepout,)))
 
     def test_rejects_duplicate_or_out_of_order_sample_labels(self):
         samples = list(_samples())

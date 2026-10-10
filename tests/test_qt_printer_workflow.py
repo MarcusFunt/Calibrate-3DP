@@ -219,13 +219,29 @@ class QtPrinterWorkflowTests(unittest.TestCase):
 
         self.assertEqual(dialog.candidate_table.rowCount(), 9)
         self.assertEqual(dialog.layout_preview.plate_layout.sample_placements, review.layout.sample_placements)
+        self.assertIsNotNone(dialog.layout_preview.plate_layout.identifier_region)
+        self.assertEqual(dialog.identifier_corner.currentData(), "front_left")
         self.assertIn("allocated at generation", dialog.code_status.text().lower())
+        dialog.identifier_corner.setCurrentIndex(dialog.identifier_corner.findData("back_right"))
         dialog.flow_values.setText("7%, 10%, 13%")
         dialog._refresh_preview()
         self.assertEqual(dialog.candidate_table.item(0, 1).text(), "7%")
+        self.assertEqual(dialog._review.configuration.layout_options["identifier_corner"], "back_right")
+        self.assertEqual(dialog.layout_preview.plate_layout.identifier_corner, "back_right")
+        self.assertTrue(dialog._form_matches_review(), dialog.status.text())
+        self.assertEqual(self.repository.list_configurations(dialog._review.configuration.experiment_id), ())
+        connection = self.repository._connect()
+        try:
+            matches = connection.execute(
+                "SELECT config_id, experiment_id, revision_no FROM experiment_configs WHERE config_id=? OR experiment_id=?",
+                (dialog._review.configuration.config_id, dialog._review.configuration.experiment_id),
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual(len(matches), 0)
         dialog._save_configuration()
 
-        self.assertIsNotNone(dialog.configuration)
+        self.assertIsNotNone(dialog.configuration, dialog.status.text())
         self.assertEqual(
             self.repository.get_configuration(dialog.configuration.config_id),
             dialog.configuration,

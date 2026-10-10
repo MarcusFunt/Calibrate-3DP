@@ -43,6 +43,8 @@ The compiler supports test-specific layouts. Flat specimens such as ironing and 
 
 - Every generated physical plate has one unique, human-readable six-character code.
 - Every sample has a compact printed label that maps to its settings in the app.
+- New schema-v2 grouped-ironing plates use real CAD text embossed into shallow pockets on each sample's bed-facing underside, leaving its functional top uninterrupted. The six-character code is raised on the top of a separate flat plaque at a selectable plate corner; two designed tabs connect the plaque to the frame. These geometry rules describe the generated design, not proof of printability or physical readability.
+- Historical schema-v1 plates retain their original voxel geometry and rail-code interpretation. Reading an old record must not reinterpret it as the schema-v2 plaque design.
 - The plate is designed to keep samples connected during plate removal, handling, and storage. Samples can be separated deliberately with a hand tool when inspection requires it.
 - The app stores the full plate-to-sample map and never relies on the physical order alone after detachment.
 - Each generated revision receives a new code. Earlier codes continue to resolve to their original immutable run.
@@ -50,7 +52,7 @@ The compiler supports test-specific layouts. Flat specimens such as ironing and 
 
 ## Experiment configuration and reproducibility
 
-Every generated experiment must retain a versioned machine-readable plan snapshot, resolved sample-to-setting map, source profile fingerprints, tool versions, and generated artifact hashes. Plate-code lookup must recover that evidence after application upgrades. Deterministic generation must be qualified by the exact plan, compiler and geometry versions; stored artifacts and hashes remain the definitive record. The bounded SQLite snapshot/artifact split and standard-library 3MF proof path are recorded implementation decisions; the wider architecture proposal in [Experiment Configuration and Generation](EXPERIMENT_CONFIGURATION_PROPOSAL.md) remains partly open and does not change the requirements in this goal.
+Every generated experiment must retain a versioned machine-readable plan snapshot, resolved sample-to-setting map, source profile fingerprints, tool versions, and generated artifact hashes. Plate-code lookup must recover that evidence after application upgrades. Deterministic generation must be qualified by the exact plan, compiler and geometry versions; stored artifacts and hashes remain the definitive record. New schema-v2 grouped-ironing configurations select the explicitly versioned `build123d@1` backend and `ironing.flat_coupon@2` recipe; the optional `[cad]` installation extra keeps that runtime out of the default install. Schema-v1 records continue using the original `stdlib-voxel@1` geometry. The bounded SQLite snapshot/artifact split and first-party Orca-specific 3MF proof path are recorded implementation decisions; the wider architecture proposal in [Experiment Configuration and Generation](EXPERIMENT_CONFIGURATION_PROPOSAL.md) remains partly open and does not change the requirements in this goal.
 
 ## Dependency and history behavior
 

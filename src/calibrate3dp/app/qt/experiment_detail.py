@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import struct
 
 from PySide6.QtCore import QObject, QRunnable, Qt, Signal, Slot, QThreadPool, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -149,6 +151,77 @@ class _FollowupTask(QRunnable):
             self.signals.completed.emit(record)
 
 
+class IdentifierMeshPreview(QWidget):
+    """Top-side preview of the actual saved identifier STL mesh."""
+
+    def __init__(self, mesh_path: Path, plate_code: str, *, legacy: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(130)
+        self.setAccessibleName("Plate identifier plaque mesh preview")
+        self.plate_code = plate_code
+        self.triangles: list[tuple[float, tuple[tuple[float, float], ...]]] = []
+        self.bounds: tuple[float, float, float, float] | None = None
+        self.message = "Legacy voxel run; its original frame code layout is retained." if legacy else "Identifier mesh was not saved for this run."
+        if not legacy and mesh_path.is_file():
+            try:
+                self._load_binary_stl(mesh_path)
+                self.message = "Actual Plate-Identifier STL · top-side raised code"
+            except (OSError, ValueError, struct.error):
+                self.message = "Saved identifier STL could not be previewed; use the artifact record to inspect it."
+
+    def _load_binary_stl(self, path: Path) -> None:
+        data = path.read_bytes()
+        if len(data) < 84:
+            raise ValueError("binary STL header is incomplete")
+        triangle_count = struct.unpack_from("<I", data, 80)[0]
+        if len(data) != 84 + triangle_count * 50:
+            raise ValueError("binary STL size does not match its triangle count")
+        x_values: list[float] = []
+        y_values: list[float] = []
+        for index in range(triangle_count):
+            values = struct.unpack_from("<12fH", data, 84 + index * 50)
+            normal_z = values[2]
+            points = tuple((values[offset], values[offset + 1]) for offset in (3, 6, 9))
+            if normal_z > 0.9:
+                z_mean = sum(values[offset + 2] for offset in (3, 6, 9)) / 3
+                self.triangles.append((z_mean, points))
+                x_values.extend(point[0] for point in points)
+                y_values.extend(point[1] for point in points)
+        if not self.triangles:
+            raise ValueError("identifier STL has no upward-facing facets")
+        self.triangles.sort(key=lambda item: item[0])
+        self.bounds = min(x_values), min(y_values), max(x_values), max(y_values)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override name
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#F6F8FA"))
+        painter.setPen(QPen(QColor("#435F83"), 1.0))
+        if self.bounds is None:
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message)
+            painter.end()
+            return
+        min_x, min_y, max_x, max_y = self.bounds
+        margin = 18.0
+        width = max(1e-6, max_x - min_x)
+        height = max(1e-6, max_y - min_y)
+        scale = min((self.width() - 2 * margin) / width, (self.height() - 2 * margin) / height)
+
+        def point(x: float, y: float) -> QPointF:
+            return QPointF(
+                (self.width() - width * scale) / 2 + (x - min_x) * scale,
+                self.height() - (self.height() - height * scale) / 2 - (y - min_y) * scale,
+            )
+
+        for z_value, triangle in self.triangles:
+            shade = max(150, min(222, 205 + round((z_value - 1.6) * 20)))
+            painter.setBrush(QBrush(QColor(shade, shade + 4, shade + 9)))
+            painter.drawPolygon(QPolygonF([point(x, y) for x, y in triangle]))
+        painter.setPen(QPen(QColor("#26384C"), 1.0))
+        painter.drawText(8, self.height() - 6, f"{self.message} · {self.plate_code}")
+        painter.end()
+
+
 class ExperimentDetailsDialog(QDialog):
     """Show run evidence and append a resumable manual assessment revision."""
 
@@ -194,6 +267,19 @@ class ExperimentDetailsDialog(QDialog):
         validation.setMaximumHeight(155)
         validation.setPlainText(_validation_summary(self.run))
         root.addWidget(validation)
+        geometry_identity = dict(self.run.validation.get("geometry", {}))
+        identifier_path = (
+            library.repository.runs_root
+            / self.run.run_id
+            / "geometry"
+            / "plate-identifier.stl"
+        )
+        self.identifier_preview = IdentifierMeshPreview(
+            identifier_path,
+            self.run.plate_code,
+            legacy=geometry_identity.get("backend_id") == "stdlib-voxel",
+        )
+        root.addWidget(self.identifier_preview)
         artifact_row = QHBoxLayout()
         artifact_row.addWidget(QLabel("Saved artifact"))
         self.artifact_choice = QComboBox()
@@ -217,7 +303,12 @@ class ExperimentDetailsDialog(QDialog):
         self.synthetic = QCheckBox("Synthetic assessment data (software walkthrough only)")
         self.attestation_notes = QLineEdit()
         self.attestation_notes.setPlaceholderText("Optional trial context")
-        self.label_legible = QCheckBox("Printed A–I labels and plate code are legible")
+        cad_geometry = geometry_identity.get("backend_id") == "build123d"
+        label_text = (
+            "Raised underside A–I labels and top plaque code are legible"
+            if cad_geometry else "Printed A–I labels and plate code are legible"
+        )
+        self.label_legible = QCheckBox(label_text)
         self.frame_adhesion_sound = QCheckBox("Frame adhered to the plate without lifting")
         self.samples_separable = QCheckBox("Samples separate with the intended hand tool")
         self.trial_material = QLineEdit(material.display_name)
@@ -227,7 +318,10 @@ class ExperimentDetailsDialog(QDialog):
         self.layer_height.setDecimals(3)
         self.layer_height.setSingleStep(0.04)
         self.layer_height.setSpecialValueText("Not recorded")
-        self.orientation = QLineEdit("Flat on bed; sample labels facing up")
+        self.orientation = QLineEdit(
+            "Flat on bed; raised sample labels face the bed, identifier text faces up"
+            if cad_geometry else "Legacy voxel orientation; retain its recorded frame-code layout"
+        )
         attestation_form.addWidget(QLabel("Was the plate printed?"), 0, 0)
         attestation_form.addWidget(self.physical_print, 0, 1)
         attestation_form.addWidget(self.physical_reviewed, 0, 2)
@@ -640,8 +734,26 @@ def _run_state(run: CalibrationRunRecord) -> str:
 
 def _validation_summary(run: CalibrationRunRecord) -> str:
     validation = dict(run.validation)
+    geometry = validation.get("geometry")
     reasons = validation.get("print_readiness_reasons", ())
     lines = [f"Generation status: {_run_state(run)}", f"Artifact records: {len(run.artifacts)}"]
+    if isinstance(geometry, dict):
+        lines.append(
+            f"Geometry backend: {geometry.get('backend_id', 'unknown')}@{geometry.get('backend_version', 'unknown')} · "
+            f"objects: {geometry.get('object_count', 'unverified')}"
+        )
+        provenance = geometry.get("provenance")
+        if isinstance(provenance, dict):
+            lines.append(
+                f"Physical labels: {provenance.get('label_mode', 'legacy layout')} · "
+                f"identifier corner: {provenance.get('identifier_corner', 'legacy frame code')}"
+            )
+            if provenance.get("font_sha256"):
+                lines.append(
+                    f"Font: {provenance.get('font_asset_id')} · sha256 {provenance['font_sha256']}"
+                )
+            if provenance.get("needs_physical_validation"):
+                lines.append("Physical label readability, adhesion and breakaway behavior remain unverified.")
     if reasons:
         lines.append("Remaining print-readiness checks:")
         lines.extend(f"• {reason}" for reason in reasons)

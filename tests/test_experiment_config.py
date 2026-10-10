@@ -5,6 +5,7 @@ import unittest
 from calibrate3dp.app.models import ProfileSelection
 from calibrate3dp.app.services.experiment_service import ExperimentService
 from calibrate3dp.domain.experiment_config import (
+    CONFIG_SCHEMA_VERSION,
     ExperimentConfigurationError,
     SavedExperimentConfiguration,
     default_layout_options,
@@ -35,7 +36,7 @@ def _selection() -> ProfileSelection:
     )
 
 
-def _configuration(*, plan=None, layout_options=None):
+def _configuration(*, plan=None, layout_options=None, schema_version=CONFIG_SCHEMA_VERSION):
     selection = _selection()
     plan = plan or ExperimentService().create_initial("ironing", selection)
     return SavedExperimentConfiguration(
@@ -48,6 +49,7 @@ def _configuration(*, plan=None, layout_options=None):
         plan=plan,
         layout_options=layout_options or default_layout_options(),
         created_at_utc="2026-10-10T12:00:00Z",
+        schema_version=schema_version,
     )
 
 
@@ -67,10 +69,46 @@ class SavedExperimentConfigurationTests(unittest.TestCase):
 
     def test_unknown_configuration_schema_is_rejected(self):
         payload = _configuration().to_dict()
-        payload["schema_version"] = 2
+        payload["schema_version"] = 99
 
         with self.assertRaisesRegex(ExperimentConfigurationError, "unsupported"):
             SavedExperimentConfiguration.from_dict(payload)
+
+    def test_schema_v1_configuration_roundtrips_with_legacy_voxel_options(self):
+        layout = default_layout_options()
+        legacy_keys = {
+            "strategy", "rows", "columns", "geometry_backend", "geometry_backend_version",
+            "margin_mm", "specimen_width_mm", "specimen_depth_mm", "specimen_height_mm",
+            "gap_mm", "connector_width_mm", "connector_height_mm", "connector_gap_mm",
+            "frame_width_mm", "voxel_mm", "label_pixel_mm", "code_pixel_mm",
+        }
+        legacy = {key: value for key, value in layout.items() if key in legacy_keys}
+        legacy["geometry_backend"] = "stdlib-voxel"
+        configuration = _configuration(layout_options=legacy, schema_version=1)
+
+        restored = SavedExperimentConfiguration.from_dict(configuration.to_dict())
+
+        self.assertEqual(restored.schema_version, 1)
+        self.assertEqual(restored.layout_options["geometry_backend"], "stdlib-voxel")
+        self.assertEqual(restored.to_dict(), configuration.to_dict())
+
+    def test_new_configuration_defaults_to_versioned_build123d_geometry(self):
+        configuration = _configuration()
+
+        self.assertEqual(configuration.schema_version, 2)
+        self.assertEqual(configuration.to_dict()["schema_version"], 2)
+        self.assertEqual(configuration.layout_options["geometry_backend"], "build123d")
+        self.assertEqual(configuration.geometry_spec.recipe_id, "ironing.flat_coupon")
+        self.assertEqual(configuration.geometry_spec.recipe_version, "2")
+        self.assertEqual(configuration.geometry_spec.identifier.corner, "front_left")
+        self.assertAlmostEqual(configuration.geometry_spec.tessellation.vertex_weld_tolerance_mm, 1e-7)
+
+    def test_schema_v2_rejects_a_changed_bundled_font_identity(self):
+        layout = default_layout_options()
+        layout["font_sha256"] = "0" * 64
+
+        with self.assertRaisesRegex(ExperimentConfigurationError, "font identity"):
+            _configuration(layout_options=layout)
 
     def test_changed_snapshot_is_rejected_when_canonical_hash_no_longer_matches(self):
         payload = _configuration().to_dict()

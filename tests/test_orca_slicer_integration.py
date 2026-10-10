@@ -5,12 +5,14 @@ root must contain machine/, process/, and filament/ JSON directories.
 """
 
 import hashlib
+import importlib.util
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -22,6 +24,7 @@ from calibrate3dp.grouped_plate import (
     machine_printable_polygon,
     validate_grouped_ironing_gcode,
     validate_grouped_plate_layout_gcode,
+    validate_build123d_feature_toolpaths,
     write_plate_geometry_3mf,
 )
 from calibrate3dp.ironing import create_initial_ironing_experiment
@@ -348,6 +351,166 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 observed_ratio = positive_validation.samples[sample].positive_extrusion_mm / baseline_extrusion
                 self.assertAlmostEqual(observed_ratio, expected_flow / 5, delta=0.02, msg=sample)
             record_evidence("grouped-negative", negative_project, negative, negative_validation, negative_layout_validation)
+
+    def test_build123d_eleven_object_geometry_and_feature_toolpaths_on_real_orca(self):
+        if importlib.util.find_spec("build123d") is None:
+            self.skipTest("install the optional cad extra to run the build123d Orca integration")
+        from calibrate3dp.geometry.build123d_backend import Build123dPlateGeometryBackend
+
+        profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
+        documents = []
+        for kind in ("machine", "process", "filament"):
+            for path in (profile_root / kind).glob("*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
+                    documents.append(ProfileDocument(payload["name"], payload["type"], "orca-build123d", payload, str(path)))
+        catalog = ProfileCatalog(documents)
+        machine = catalog.resolve("machine", "orca-build123d", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
+        process = catalog.resolve("process", "orca-build123d", os.environ.get("ORCA_PROCESS_PROFILE", "0.20mm Standard @Creality Ender3V2"))
+        filament = catalog.resolve("filament", "orca-build123d", os.environ.get("ORCA_FILAMENT_PROFILE", "Creality Generic PLA"))
+        plan = create_initial_ironing_experiment(
+            plan_id="orca-build123d-eleven-object-gate",
+            baseline_settings={**dict(process.settings), "ironing_type": "top"},
+            flow_values=(12, 15, 18),
+            speed_values=(10, 15, 20),
+        )
+        request = PlateLayoutRequest(
+            samples=tuple(
+                PlateSampleRequest(label, candidate.candidate_id, candidate.overrides)
+                for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+            ),
+            plate_code="R2F0I5",
+            printable_polygon=machine_printable_polygon(machine.settings),
+            keep_outs=machine_keep_out_polygons(machine.settings),
+            geometry_backend="build123d",
+            geometry_backend_version="1",
+        )
+        geometry = Build123dPlateGeometryBackend().build(request)
+        backend_report = Build123dPlateGeometryBackend().validate(geometry)
+        self.assertTrue(backend_report.valid, backend_report.messages)
+        expected = {
+            f"Sample-{label}": candidate.overrides
+            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+        }
+        adapter = OrcaProfileAdapter()
+        machine_cli = dict(machine.settings)
+        machine_cli.pop("inherits", None)
+        machine_cli["name"], machine_cli["type"] = machine.profile.name, machine.profile.kind
+        process_cli = adapter.to_cli_profile(
+            process,
+            name=process.profile.name + " [Calibrate3DP build123d gate]",
+            settings_patch={
+                "ironing_type": "top", "ironing_flow": "5%", "ironing_speed": "5",
+                "gcode_comments": "1", "gcode_label_objects": "1",
+            },
+        )
+        filament_cli = adapter.to_cli_profile(filament, name=filament.profile.name + " [Calibrate3DP build123d gate]")
+        exe = os.environ["ORCA_SLICER_EXE"]
+        cli = OrcaCli(exe)
+        capabilities = cli.probe(timeout_seconds=30)
+        started = time.perf_counter()
+        with _integration_root("build123d-eleven-object") as root:
+            profile_dir = root / "profiles"
+            profile_dir.mkdir()
+            profile_paths = {}
+            for name, payload in (("machine", machine_cli), ("process", process_cli), ("filament", filament_cli)):
+                path = profile_dir / f"{name}.json"
+                path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                profile_paths[name] = path
+
+            def slice_run(name: str, *, omit: set[str] | None = None):
+                project = write_plate_geometry_3mf(
+                    geometry,
+                    destination=root / f"{name}.3mf",
+                    module_id=plan.module_id,
+                    plan_id=plan.plan_id,
+                    omitted_candidate_ids=omit or set(),
+                )
+                output, data = root / f"{name}-output", root / f"{name}-data"
+                output.mkdir()
+                data.mkdir()
+                result = cli.run_slice(
+                    model_path=project,
+                    machine_process_profiles=(profile_paths["machine"], profile_paths["process"]),
+                    filament_profiles=(profile_paths["filament"],),
+                    output_dir=output,
+                    data_dir=data,
+                    timeout_seconds=300,
+                )
+                (root / f"{name}-stdout.log").write_text(result.stdout, encoding="utf-8")
+                (root / f"{name}-stderr.log").write_text(result.stderr, encoding="utf-8")
+                self.assertFalse(result.timed_out, result.stderr)
+                self.assertFalse(result.cancelled, result.stderr)
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                self.assertEqual(len(result.gcode_files), 1, result.stderr or result.stdout)
+                return project, result
+
+            positive_project, positive = slice_run("positive")
+            positive_flow = validate_grouped_ironing_gcode(positive.gcode_files[0], expected)
+            positive_layout = validate_grouped_plate_layout_gcode(positive.gcode_files[0], geometry, machine.settings)
+            positive_features = validate_build123d_feature_toolpaths(positive.gcode_files[0], geometry)
+            self.assertTrue(positive_flow.valid, positive_flow.messages)
+            self.assertTrue(positive_layout.valid, positive_layout.messages)
+            self.assertTrue(positive_features.valid, positive_features.messages)
+            self.assertEqual(set(positive_layout.object_bounds_mm), {item.name for item in geometry.objects})
+            self.assertEqual(set(positive_features.first_layer_label_moves), {f"Sample-{label}" for label in "ABCDEFGHI"})
+            self.assertGreater(positive_features.identifier_top_text_moves, 0)
+
+            negative_project, negative = slice_run("negative", omit={plan.candidates[4].candidate_id})
+            negative_flow = validate_grouped_ironing_gcode(negative.gcode_files[0], expected)
+            negative_layout = validate_grouped_plate_layout_gcode(negative.gcode_files[0], geometry, machine.settings)
+            negative_features = validate_build123d_feature_toolpaths(negative.gcode_files[0], geometry)
+            self.assertFalse(negative_flow.valid)
+            self.assertTrue(negative_layout.valid, negative_layout.messages)
+            self.assertTrue(negative_features.valid, negative_features.messages)
+            self.assertTrue(any("Sample-E" in message for message in negative_flow.messages))
+
+            header = next(
+                (line.strip().removeprefix("; generated by ") for line in positive.gcode_files[0].read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("; generated by ")),
+                None,
+            )
+            evidence = {
+                "schema_version": 2,
+                "orca_executable": str(Path(exe).resolve()),
+                "orca_executable_sha256": capabilities.executable_sha256,
+                "orca_version_banner": capabilities.version_banner,
+                "gcode_identity": header,
+                "source_profiles": {
+                    role: {"path": item.profile.source, "name": item.profile.name, "sha256": _sha256(Path(item.profile.source))}
+                    for role, item in (("machine", machine), ("process", process), ("filament", filament))
+                },
+                "geometry": dict(geometry.metadata),
+                "objects": [
+                    {"name": item.name, "role": item.role, "bounds_mm": list(item.mesh.bounds or ()), "metadata": dict(item.metadata)}
+                    for item in geometry.objects
+                ],
+                "connections": [
+                    {"source_name": item.source_name, "target_name": item.target_name, "contact_area_mm2": item.contact_area_mm2}
+                    for item in geometry.connections
+                ],
+                "positive": {
+                    "project_sha256": _sha256(positive_project),
+                    "gcode_path": str(positive.gcode_files[0]),
+                    "gcode_sha256": _sha256(positive.gcode_files[0]),
+                    "gcode_size_bytes": positive.gcode_files[0].stat().st_size,
+                    "argv": list(positive.argv),
+                    "flow_proof": {"valid": positive_flow.valid, "samples": list(positive_flow.samples)},
+                    "layout_proof": positive_layout.to_dict(),
+                    "feature_proof": positive_features.to_dict(),
+                },
+                "negative_missing_sample_override": {
+                    "project_sha256": _sha256(negative_project),
+                    "gcode_sha256": _sha256(negative.gcode_files[0]),
+                    "flow_proof": {"valid": negative_flow.valid, "messages": list(negative_flow.messages)},
+                    "layout_valid": negative_layout.valid,
+                },
+                "elapsed_seconds": time.perf_counter() - started,
+                "print_ready": False,
+            }
+            (root / "build123d-orca-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _numbers(value: str) -> tuple[float, ...]:

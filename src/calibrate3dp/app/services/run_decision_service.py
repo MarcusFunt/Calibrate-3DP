@@ -140,6 +140,7 @@ class RunDecisionService:
             parent_run_id=run.run_id,
             parent_assessment_revision_id=assessment.assessment_revision_id,
             parent_candidate_id=decision.selected_candidate_id,
+            schema_version=parent_configuration.schema_version,
         )
         self.repository.save_configuration(configuration)
         return configuration

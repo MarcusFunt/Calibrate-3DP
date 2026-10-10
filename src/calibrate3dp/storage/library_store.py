@@ -22,7 +22,7 @@ from calibrate3dp.domain.assessment import AssessmentRevision, PrintAttestation
 from calibrate3dp.domain.run_decision import RunDecisionRecord
 from calibrate3dp.domain.run_export import RunExportRecord
 from calibrate3dp.experiments import ExperimentResults
-from calibrate3dp.storage.session_store import SessionRepository
+from calibrate3dp.storage.session_store import CURRENT_SCHEMA_VERSION, SessionRepository
 
 
 class LibraryStoreError(RuntimeError):
@@ -837,7 +837,7 @@ class LibraryRepository:
         connection = self._connect()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != 3:
+            if version != CURRENT_SCHEMA_VERSION:
                 raise LibraryStoreError(f"workspace schema version {version} is not ready for library records")
         finally:
             connection.close()

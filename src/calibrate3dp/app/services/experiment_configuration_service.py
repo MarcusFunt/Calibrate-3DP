@@ -48,10 +48,17 @@ class ExperimentConfigurationService:
         printer_id: str,
         material_id: str,
         options: ExperimentOptions | Mapping[str, Any] | None = None,
+        *,
+        layout_options: Mapping[str, Any] | None = None,
     ) -> ExperimentConfigurationReview:
         """Build an editable review; this never allocates a plate code or run."""
         selection = _enable_top_ironing(self.library.resolve_selection(printer_id, material_id))
         plan = self.experiments.create_initial("ironing", selection, options)
+        selected_layout = default_layout_options()
+        if layout_options is not None:
+            if not isinstance(layout_options, Mapping):
+                raise ConfigurationServiceError("layout_options must be an object")
+            selected_layout.update(layout_options)
         configuration = SavedExperimentConfiguration(
             config_id=f"config-{uuid4().hex}",
             experiment_id=f"experiment-{uuid4().hex}",
@@ -60,7 +67,7 @@ class ExperimentConfigurationService:
             material_id=material_id,
             profile_selection=selection,
             plan=plan,
-            layout_options=default_layout_options(),
+            layout_options=selected_layout,
             created_at_utc=utc_now(),
         )
         return self.review(configuration)
@@ -71,6 +78,7 @@ class ExperimentConfigurationService:
         *,
         flow_values: Sequence[Any],
         speed_values: Sequence[Any],
+        layout_options: Mapping[str, Any] | None = None,
     ) -> ExperimentConfigurationReview:
         """Return a new immutable config revision with edited sweep values."""
         if not isinstance(configuration, SavedExperimentConfiguration):
@@ -83,6 +91,11 @@ class ExperimentConfigurationService:
             configuration.profile_selection,
             ExperimentOptions(flow_values=flow_values, speed_values=speed_values, plan_id=plan_id),
         )
+        selected_layout = dict(configuration.layout_options)
+        if layout_options is not None:
+            if not isinstance(layout_options, Mapping):
+                raise ConfigurationServiceError("layout_options must be an object")
+            selected_layout.update(layout_options)
         revised = SavedExperimentConfiguration(
             config_id=f"config-{uuid4().hex}",
             experiment_id=configuration.experiment_id,
@@ -91,8 +104,9 @@ class ExperimentConfigurationService:
             material_id=configuration.material_id,
             profile_selection=configuration.profile_selection,
             plan=plan,
-            layout_options=configuration.layout_options,
+            layout_options=selected_layout,
             created_at_utc=utc_now(),
+            schema_version=configuration.schema_version,
         )
         return self.review(revised)
 

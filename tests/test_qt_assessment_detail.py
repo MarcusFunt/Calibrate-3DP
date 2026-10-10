@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import struct
 import tempfile
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
-from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
+from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog, IdentifierMeshPreview
 from calibrate3dp.app.services.assessment_service import AssessmentService
 from calibrate3dp.app.services.experiment_service import ExperimentService
 from calibrate3dp.app.services.library_service import LibraryService
@@ -26,6 +28,32 @@ APP = QApplication.instance() or QApplication([])
 
 
 class QtExperimentDetailsTests(unittest.TestCase):
+    def tearDown(self):
+        for widget in QApplication.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QApplication.processEvents()
+
+    def test_identifier_preview_renders_the_saved_mesh_facets_offscreen(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "plate-identifier.stl"
+            record = struct.pack(
+                "<12fH",
+                0.0, 0.0, 1.0,
+                1.0, 2.0, 2.1,
+                40.0, 2.0, 2.1,
+                40.0, 14.0, 2.1,
+                0,
+            )
+            path.write_bytes(b"test".ljust(80, b"\0") + struct.pack("<I", 1) + record)
+            preview = IdentifierMeshPreview(path, "R2F0I5")
+            preview.resize(280, 150)
+
+            self.assertEqual(preview.bounds, (1.0, 2.0, 40.0, 14.0))
+            self.assertIn("actual", preview.message.lower())
+            self.assertFalse(preview.grab().isNull())
+
     def test_details_opens_only_a_hash_verified_saved_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

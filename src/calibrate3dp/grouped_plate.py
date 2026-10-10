@@ -18,11 +18,20 @@ from typing import Any, Mapping
 
 from calibrate3dp.experiments import ExperimentPlan
 from calibrate3dp.geometry.layout import PlateLayoutError, require_layout_fits_printable_area
-from calibrate3dp.geometry.specimens import PlateGeometry, PlateGeometryBackend
+from calibrate3dp.geometry.contracts import GeometryValidation, PlateGeometry
+from calibrate3dp.geometry.registry import GeometryBackendUnavailable, get_geometry_backend
 
 
 class GroupedPlateError(ValueError):
     """Raised when a grouped plate cannot be compiled safely."""
+
+
+def _validate_geometry_backend(geometry: PlateGeometry) -> GeometryValidation:
+    try:
+        backend = get_geometry_backend(geometry.backend_id, geometry.backend_version)
+    except GeometryBackendUnavailable as exc:
+        return GeometryValidation(False, (str(exc),))
+    return backend.validate(geometry)
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,27 @@ class GroupedPlateLayoutValidation:
 
 
 @dataclass(frozen=True)
+class GroupedFeatureGcodeValidation:
+    """Slicer evidence for CAD labels and the separate code plaque."""
+
+    valid: bool
+    messages: tuple[str, ...]
+    first_layer_label_moves: Mapping[str, int]
+    identifier_top_text_moves: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "first_layer_label_moves", MappingProxyType(dict(self.first_layer_label_moves)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "messages": list(self.messages),
+            "first_layer_label_moves": dict(self.first_layer_label_moves),
+            "identifier_top_text_moves": self.identifier_top_text_moves,
+        }
+
+
+@dataclass(frozen=True)
 class PlateBounds:
     min_x: float
     min_y: float
@@ -83,7 +113,7 @@ class PlateBounds:
 _CORE_NS = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 _OBJECT_START = re.compile(r"^;\s*printing object\s+(.+?)\s+id:", re.IGNORECASE)
 _GCODE_WORD = re.compile(r"(?:^|\s)([EF])([-+]?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
-_GCODE_AXIS_WORD = re.compile(r"(?:^|\s)([EXY])([-+]?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
+_GCODE_AXIS_WORD = re.compile(r"(?:^|\s)([EXYZ])([-+]?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
 _VERTICES = (
     (0, 0, 0), (30, 0, 0), (30, 30, 0), (0, 30, 0),
     (0, 0, 4), (30, 0, 4), (30, 30, 4), (0, 30, 4),
@@ -233,7 +263,7 @@ def write_plate_geometry_3mf(
     ID; frame and connector geometry stays in a separate object without sample
     ironing overrides.
     """
-    if not isinstance(geometry, PlateGeometry) or not PlateGeometryBackend().validate(geometry).valid:
+    if not isinstance(geometry, PlateGeometry) or not _validate_geometry_backend(geometry).valid:
         raise GroupedPlateError("connected plate geometry must pass backend validation")
     if not isinstance(module_id, str) or not module_id.strip() or not isinstance(plan_id, str) or not plan_id.strip():
         raise GroupedPlateError("module_id and plan_id must be non-empty strings")
@@ -272,7 +302,7 @@ def write_plate_geometry_3mf(
         build_items.append((object_id, obj.name))
     model_settings_xml = ET.tostring(model_settings, encoding="utf-8", xml_declaration=True)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2 if geometry.backend_id == "build123d" else 1,
         "module_id": module_id,
         "plan_id": plan_id,
         "plate_code": geometry.layout.plate_code,
@@ -295,7 +325,28 @@ def write_plate_geometry_3mf(
                 obj.name: list(obj.mesh.bounds or ())
                 for obj in geometry.objects
             },
+            "provenance": dict(geometry.metadata),
         },
+        "objects": [
+            {
+                "name": obj.name,
+                "role": obj.role,
+                "physical_marking": obj.printed_marking,
+                "candidate_id": obj.candidate_id,
+                "metadata": dict(obj.metadata),
+            }
+            for obj in geometry.objects
+        ],
+        "connections": [
+            {
+                "sample_label": item.sample_label,
+                "source_name": item.source_name,
+                "target_name": item.target_name,
+                "contact_area_mm2": item.contact_area_mm2,
+                "separation_type": item.separation_type,
+            }
+            for item in geometry.connections
+        ],
         "samples": manifest_samples,
         "frame_object": next((obj.name for obj in geometry.objects if obj.sample_label is None), None),
     }
@@ -434,7 +485,7 @@ def require_plate_geometry_fits_machine(geometry: PlateGeometry, machine_setting
     """Validate all plate features against this machine's bed, keep-outs, and height."""
     if not isinstance(geometry, PlateGeometry) or not isinstance(machine_settings, Mapping):
         raise GroupedPlateError("connected plate and resolved machine settings are required")
-    report = PlateGeometryBackend().validate(geometry)
+    report = _validate_geometry_backend(geometry)
     if not report.valid:
         raise GroupedPlateError("connected plate geometry is invalid: " + "; ".join(report.messages))
     bounds = geometry.layout.bounds
@@ -482,7 +533,7 @@ def validate_grouped_plate_layout_gcode(
         or xy_tolerance_mm < 0
     ):
         raise GroupedPlateError("xy_tolerance_mm must be finite and non-negative")
-    report = PlateGeometryBackend().validate(geometry)
+    report = _validate_geometry_backend(geometry)
     messages = list(report.messages)
     if not report.valid:
         return GroupedPlateLayoutValidation(False, tuple(messages), None, {})
@@ -564,6 +615,109 @@ def validate_grouped_plate_layout_gcode(
             messages.append("translated G-code plate layout is outside the selected machine area: " + str(exc))
 
     return GroupedPlateLayoutValidation(not messages, tuple(messages), translation, actual)
+
+
+def validate_build123d_feature_toolpaths(
+    gcode: str | Path,
+    geometry: PlateGeometry,
+    *,
+    z_tolerance_mm: float = 0.3,
+) -> GroupedFeatureGcodeValidation:
+    """Require first-layer sample glyphs and top-side plaque text in sliced G-code.
+
+    The proof is deliberately limited to feature presence and spatial placement.
+    It does not infer readability, adhesion, successful bridging, or print safety.
+    """
+    if not isinstance(geometry, PlateGeometry) or geometry.backend_id != "build123d":
+        return GroupedFeatureGcodeValidation(True, (), {}, 0)
+    if isinstance(gcode, Path):
+        try:
+            text = gcode.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise GroupedPlateError(f"G-code file could not be read: {exc}") from exc
+    elif isinstance(gcode, str):
+        text = gcode
+    else:
+        raise GroupedPlateError("gcode must be text or a Path")
+    if not math.isfinite(z_tolerance_mm) or z_tolerance_mm <= 0:
+        raise GroupedPlateError("z_tolerance_mm must be finite and positive")
+
+    moves: dict[str, list[tuple[float, float, float]]] = {}
+    current_object: str | None = None
+    current_z = 0.0
+    for line in text.splitlines():
+        start = _OBJECT_START.match(line)
+        if start:
+            current_object = start.group(1).strip()
+            moves.setdefault(current_object, [])
+            continue
+        if re.match(r"^;\s*stop printing object\b", line, re.IGNORECASE):
+            current_object = None
+            continue
+        if current_object is None:
+            continue
+        command = line.partition(";")[0].strip()
+        if not re.match(r"^G[0-3](?:\s|$)", command, re.IGNORECASE):
+            continue
+        words = {key.upper(): float(value) for key, value in _GCODE_AXIS_WORD.findall(command)}
+        if "Z" in words:
+            current_z = words["Z"]
+        if words.get("E", 0.0) > 0 and "X" in words and "Y" in words:
+            moves[current_object].append((words["X"], words["Y"], words.get("Z", current_z)))
+
+    messages: list[str] = []
+    expected_names = {item.name for item in geometry.objects}
+    if set(moves) != expected_names:
+        missing = sorted(expected_names - set(moves))
+        unexpected = sorted(set(moves) - expected_names)
+        if missing:
+            messages.append("feature G-code is missing object sections: " + ", ".join(missing))
+        if unexpected:
+            messages.append("feature G-code contains unrecognized object sections: " + ", ".join(unexpected))
+
+    def inside(x: float, y: float, bounds: Any) -> bool:
+        return bounds[0] - 0.05 <= x <= bounds[2] + 0.05 and bounds[1] - 0.05 <= y <= bounds[3] + 0.05
+
+    label_counts: dict[str, int] = {}
+    for obj in geometry.objects:
+        if obj.sample_label is None:
+            continue
+        points = moves.get(obj.name, ())
+        if not points:
+            messages.append(f"{obj.name} has no positive extrusion for its underside label")
+            label_counts[obj.name] = 0
+            continue
+        first_z = min(point[2] for point in points)
+        bounds = obj.metadata.get("text_bounds_mm")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            messages.append(f"{obj.name} has no measured underside glyph bounds")
+            label_counts[obj.name] = 0
+            continue
+        count = sum(
+            1 for x, y, z in points
+            if z <= first_z + 0.05 and inside(x, y, bounds)
+        )
+        label_counts[obj.name] = count
+        if count == 0:
+            messages.append(f"{obj.name} has no first-layer extrusion inside its underside glyph bounds")
+
+    identifier = next((item for item in geometry.objects if item.name == "Plate-Identifier"), None)
+    identifier_moves = 0
+    if identifier is None:
+        messages.append("CAD geometry has no Plate-Identifier object")
+    else:
+        bounds = identifier.metadata.get("text_bounds_mm")
+        top_z = identifier.metadata.get("text_top_z_mm")
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4 or not isinstance(top_z, (int, float)):
+            messages.append("Plate-Identifier has no measured top-text bounds")
+        else:
+            identifier_moves = sum(
+                1 for x, y, z in moves.get(identifier.name, ())
+                if z >= float(top_z) - z_tolerance_mm and inside(x, y, bounds)
+            )
+            if identifier_moves == 0:
+                messages.append("Plate-Identifier has no top-side text extrusion near its measured text bounds")
+    return GroupedFeatureGcodeValidation(not messages, tuple(messages), label_counts, identifier_moves)
 
 
 def validate_grouped_ironing_gcode(

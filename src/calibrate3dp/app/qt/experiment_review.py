@@ -9,6 +9,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QDialog,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -25,7 +26,9 @@ from calibrate3dp.app.services.experiment_service import ExperimentOptions
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
 from calibrate3dp.app.services.experiment_configuration_service import ExperimentConfigurationReview
 from calibrate3dp.domain.experiment_config import SavedExperimentConfiguration
+from calibrate3dp.geometry.font_asset import is_pinned_font_available
 from calibrate3dp.geometry.layout import PlateLayout
+from calibrate3dp.geometry.registry import is_geometry_backend_available
 from calibrate3dp.grouped_plate import machine_keep_out_polygons, machine_printable_polygon
 
 
@@ -44,7 +47,7 @@ class PlatePreviewWidget(QWidget):
         self.keep_outs = machine_keep_out_polygons(machine_settings)
         self.setMinimumSize(420, 280)
         self.setAccessibleName("Connected plate layout preview")
-        self.setAccessibleDescription("A through I sample positions, connected frame, labels, and machine keep-outs.")
+        self.setAccessibleDescription("Sample positions, connected frame, physical labels, corner identifier plaque, and machine keep-outs.")
 
     def set_layout(self, plate_layout: PlateLayout | None) -> None:
         self.plate_layout = plate_layout
@@ -103,15 +106,25 @@ class PlatePreviewWidget(QWidget):
             for label, region in plate_layout.label_regions:
                 polygon = QPolygonF([point(x, y) for x, y in region.corners])
                 painter.drawPolygon(polygon)
-                painter.drawText(polygon.boundingRect(), Qt.AlignmentFlag.AlignCenter, label)
-            support = QPolygonF([point(x, y) for x, y in plate_layout.code_support_region.corners])
-            painter.setPen(QPen(QColor("#586C83"), 0.8))
-            painter.setBrush(QBrush(QColor("#CFD9E5")))
-            painter.drawPolygon(support)
-            painter.drawText(support.boundingRect(), Qt.AlignmentFlag.AlignCenter, "CODE")
-            painter.setBrush(QBrush(QColor("#8C9EB4")))
-            for _character, region in plate_layout.code_regions:
-                painter.drawPolygon(QPolygonF([point(x, y) for x, y in region.corners]))
+                painter.drawText(polygon.boundingRect(), Qt.AlignmentFlag.AlignCenter, label + " underside")
+            if plate_layout.identifier_region is not None:
+                plaque = QPolygonF([point(x, y) for x, y in plate_layout.identifier_region.corners])
+                painter.setPen(QPen(QColor("#435F83"), 1.1))
+                painter.setBrush(QBrush(QColor("#CFD9E5")))
+                painter.drawPolygon(plaque)
+                painter.drawText(plaque.boundingRect(), Qt.AlignmentFlag.AlignCenter, plate_layout.plate_code)
+                painter.setBrush(QBrush(QColor("#8C9EB4")))
+                for tab in plate_layout.identifier_tabs:
+                    painter.drawPolygon(QPolygonF([point(x, y) for x, y in tab.corners]))
+            else:
+                support = QPolygonF([point(x, y) for x, y in plate_layout.code_support_region.corners])
+                painter.setPen(QPen(QColor("#586C83"), 0.8))
+                painter.setBrush(QBrush(QColor("#CFD9E5")))
+                painter.drawPolygon(support)
+                painter.drawText(support.boundingRect(), Qt.AlignmentFlag.AlignCenter, "CODE")
+                painter.setBrush(QBrush(QColor("#8C9EB4")))
+                for _character, region in plate_layout.code_regions:
+                    painter.drawPolygon(QPolygonF([point(x, y) for x, y in region.corners]))
         painter.end()
 
 
@@ -133,6 +146,7 @@ class ExperimentConfigurationDialog(QDialog):
         self._saved_configuration: SavedExperimentConfiguration | None = saved_configuration
         self.configuration: SavedExperimentConfiguration | None = saved_configuration
         self._dirty = False
+        self._backend_ready = True
         self.setWindowTitle("Review Ironing Experiment")
         self.setMinimumSize(960, 760)
         root = QVBoxLayout(self)
@@ -162,9 +176,21 @@ class ExperimentConfigurationDialog(QDialog):
         self.speed_values = QLineEdit()
         self.speed_values.setAccessibleName("Ironing speed values, low mid high")
         controls.addWidget(self.speed_values, 1, 1)
+        self.corner_label = QLabel("Plate identifier plaque corner")
+        controls.addWidget(self.corner_label, 2, 0)
+        self.identifier_corner = QComboBox()
+        self.identifier_corner.setAccessibleName("Plate identifier plaque corner")
+        for value, label in (
+            ("front_left", "Front left"),
+            ("front_right", "Front right"),
+            ("back_left", "Back left"),
+            ("back_right", "Back right"),
+        ):
+            self.identifier_corner.addItem(label, value)
+        controls.addWidget(self.identifier_corner, 2, 1)
         self.update_button = QPushButton("Update preview")
         self.update_button.setObjectName("secondaryAction")
-        controls.addWidget(self.update_button, 0, 2, 2, 1)
+        controls.addWidget(self.update_button, 0, 2, 3, 1)
         root.addLayout(controls)
 
         self.candidate_table = QTableWidget(0, 4)
@@ -225,11 +251,12 @@ class ExperimentConfigurationDialog(QDialog):
         self.generate_button.clicked.connect(self._generate_saved_configuration)
         self.flow_values.textChanged.connect(self._mark_dirty)
         self.speed_values.textChanged.connect(self._mark_dirty)
+        self.identifier_corner.currentIndexChanged.connect(self._mark_dirty)
         self._load_review(review)
         if saved_configuration is not None:
             self.save_button.setText("Save new revision")
             self.save_button.setEnabled(False)
-            self.generate_button.setEnabled(review.layout is not None)
+            self.generate_button.setEnabled(review.layout is not None and self._backend_ready)
 
     def _load_review(self, review: ExperimentConfigurationReview) -> None:
         self._review = review
@@ -238,6 +265,11 @@ class ExperimentConfigurationDialog(QDialog):
         speed = next(item.values for item in configuration.plan.dimensions if item.key == "ironing_speed")
         self.flow_values.setText(", ".join(str(item) for item in flow))
         self.speed_values.setText(", ".join(str(item) for item in speed))
+        corner_index = self.identifier_corner.findData(configuration.layout_options.get("identifier_corner", "front_left"))
+        self.identifier_corner.setCurrentIndex(max(0, corner_index))
+        has_corner_choice = configuration.schema_version >= 2
+        self.corner_label.setVisible(has_corner_choice)
+        self.identifier_corner.setVisible(has_corner_choice)
         profiles = configuration.profile_selection
         hashes = configuration.source_profile_hashes
         self.profile_context.setText(
@@ -260,16 +292,26 @@ class ExperimentConfigurationDialog(QDialog):
                 f"{options['specimen_height_mm']:.1f} mm; tabs: {options['connector_width_mm']:.1f} × "
                 f"{options['connector_height_mm']:.1f} mm; frame rail: {options['frame_width_mm']:.1f} mm; "
                 f"geometry: {options['geometry_backend']} {options['geometry_backend_version']}. "
-                "Green shows specimens and the connected frame; red areas show machine keep-outs."
+                f"Raised labels face the bed in {options.get('label_pocket_depth_z_mm', 0):.1f} mm pockets; "
+                f"identifier: {review.layout.identifier_corner or 'legacy frame code'}. "
+                "Green shows specimens and frame; blue shows the separate plaque; red areas show keep-outs. "
+                "Readability, adhesion and tab separation still need a physical print trial."
             )
         else:
             self.geometry_details.setText("Layout preview is unavailable because machine bounds or keep-outs reject this plate.")
         self._refresh_candidate_table(review)
         self._dirty = False
+        self._backend_ready = _geometry_backend_ready(configuration.layout_options)
+        if not self._backend_ready:
+            self.save_button.setEnabled(False)
+            self.generate_button.setEnabled(False)
+            self.status.setText(
+                "The pinned CAD backend or bundled font is unavailable. Install the optional cad extra and verify the font asset before saving or generating this schema-v2 configuration."
+            )
 
     def _mark_dirty(self, _text: str) -> None:
         self._dirty = True
-        self.save_button.setEnabled(True)
+        self.save_button.setEnabled(self._backend_ready)
         self.generate_button.setEnabled(False)
         self.status.setText("The form has unsaved edits. Save will validate and freeze the values currently shown.")
 
@@ -283,21 +325,39 @@ class ExperimentConfigurationDialog(QDialog):
             return False
         current_flow = next(item.values for item in self._review.configuration.plan.dimensions if item.key == "ironing_flow")
         current_speed = next(item.values for item in self._review.configuration.plan.dimensions if item.key == "ironing_speed")
-        return flow == current_flow and speed == current_speed
+        return (
+            flow == current_flow
+            and speed == current_speed
+            and (
+                self._review.configuration.schema_version == 1
+                or self.identifier_corner.currentData()
+                == self._review.configuration.layout_options.get("identifier_corner", "front_left")
+            )
+        )
 
     def _refresh_preview(self) -> None:
         try:
             flow = _triple(self.flow_values.text(), "ironing flow")
             speed = _triple(self.speed_values.text(), "ironing speed")
             if self._saved_configuration is None:
+                layout_options = dict(self._review.configuration.layout_options)
+                if self._review.configuration.schema_version >= 2:
+                    layout_options["identifier_corner"] = self.identifier_corner.currentData()
                 review = self.generation.prepare_ironing_configuration(
                     self._base_configuration.printer_id,
                     self._base_configuration.material_id,
                     ExperimentOptions(flow_values=flow, speed_values=speed),
+                    layout_options=layout_options,
                 )
             else:
+                layout_options = dict(self._review.configuration.layout_options)
+                if self._review.configuration.schema_version >= 2:
+                    layout_options["identifier_corner"] = self.identifier_corner.currentData()
                 review = self.generation.configurations.revise_ironing(
-                    self._saved_configuration, flow_values=flow, speed_values=speed
+                    self._saved_configuration,
+                    flow_values=flow,
+                    speed_values=speed,
+                    layout_options=layout_options,
                 )
         except Exception as exc:
             self._review = None
@@ -307,14 +367,15 @@ class ExperimentConfigurationDialog(QDialog):
             self.save_button.setEnabled(False)
             self.generate_button.setEnabled(False)
             return
-        self.save_button.setEnabled(True)
+        self.save_button.setEnabled(self._backend_ready)
         self._load_review(review)
         self._base_configuration = review.configuration
         self._dirty = True
         self.generate_button.setEnabled(False)
-        self.status.setText(
-            "Preview uses the same connected-grid geometry and machine keep-outs as generation. The code is still allocated only when the saved revision is generated."
-        )
+        if self._backend_ready:
+            self.status.setText(
+                "Preview uses the same connected-grid geometry and machine keep-outs as generation. The code is still allocated only when the saved revision is generated."
+            )
 
     def _refresh_candidate_table(self, review: ExperimentConfigurationReview) -> None:
         entries = review.experiment_review.plate_map
@@ -326,6 +387,11 @@ class ExperimentConfigurationDialog(QDialog):
 
     def _save_configuration(self) -> None:
         if self._review is None:
+            return
+        if not self._backend_ready:
+            self.status.setText(
+                "The pinned CAD backend or bundled font is unavailable; install the optional cad extra and verify the font asset before saving."
+            )
             return
         if not self._dirty and self._saved_configuration is not None:
             return
@@ -340,7 +406,7 @@ class ExperimentConfigurationDialog(QDialog):
             return
         self.configuration = self._saved_configuration
         self._dirty = False
-        self.generate_button.setEnabled(self._review.layout is not None)
+        self.generate_button.setEnabled(self._review.layout is not None and self._backend_ready)
         self.save_button.setText(
             "Save new revision" if self._saved_configuration.revision_no > 1 else "Configuration saved"
         )
@@ -362,3 +428,9 @@ def _triple(raw: str, name: str) -> tuple[str, str, str]:
     if len(values) != 3 or any(not item for item in values):
         raise ValueError(f"{name} needs exactly three comma-separated values")
     return values
+
+
+def _geometry_backend_ready(options: dict[str, Any]) -> bool:
+    if options.get("geometry_backend") == "build123d":
+        return is_geometry_backend_available("build123d", "1") and is_pinned_font_available()
+    return options.get("geometry_backend") == "stdlib-voxel" and options.get("geometry_backend_version") == "1"

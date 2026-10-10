@@ -27,11 +27,13 @@ from calibrate3dp.calibration.state import CalibrationState
 from calibrate3dp.domain.experiment_config import SavedExperimentConfiguration
 from calibrate3dp.domain.records import ArtifactRecord, CalibrationRunRecord, utc_now
 from calibrate3dp.geometry.layout import PlateLayoutError
-from calibrate3dp.geometry.specimens import PlateGeometry, PlateGeometryBackend
+from calibrate3dp.geometry.contracts import GeometryValidation, PlateGeometry
+from calibrate3dp.geometry.registry import GeometryBackendUnavailable, get_geometry_backend
 from calibrate3dp.gcode_preflight import validate_gcode_preflight
 from calibrate3dp.grouped_plate import (
     machine_keep_out_polygons,
     require_plate_geometry_fits_machine,
+    validate_build123d_feature_toolpaths,
     validate_grouped_ironing_gcode,
     validate_grouped_plate_layout_gcode,
     write_plate_geometry_3mf,
@@ -127,10 +129,14 @@ class GroupedOrcaGenerationService:
         printer_id: str,
         material_id: str,
         options=None,
+        *,
+        layout_options=None,
     ) -> ExperimentConfigurationReview:
         """Return a candidate/settings/layout review without allocating a code."""
         try:
-            return self.configurations.prepare_ironing(printer_id, material_id, options)
+            return self.configurations.prepare_ironing(
+                printer_id, material_id, options, layout_options=layout_options
+            )
         except (ExperimentServiceError, ValueError) as exc:
             raise GroupedOrcaGenerationError(str(exc)) from exc
 
@@ -171,17 +177,21 @@ class GroupedOrcaGenerationService:
         for _attempt in range(128):
             plate_code = self.repository.allocate_plate_code()
             try:
-                geometry = PlateGeometryBackend().build(grouped_ironing_layout_request(
+                geometry_request = grouped_ironing_layout_request(
                     configuration.plan,
                     plate_code,
                     configuration.profile_selection.printer.settings,
                     configuration.layout_options,
-                ))
+                )
+                geometry = get_geometry_backend(
+                    configuration.layout_options["geometry_backend"],
+                    configuration.layout_options["geometry_backend_version"],
+                ).build(geometry_request)
                 require_plate_geometry_fits_machine(
                     geometry, configuration.profile_selection.printer.settings
                 )
                 geometry_error = None
-            except (GroupedOrcaGenerationError, PlateLayoutError, ValueError) as exc:
+            except (GroupedOrcaGenerationError, GeometryBackendUnavailable, PlateLayoutError, ValueError) as exc:
                 geometry = None
                 geometry_error = str(exc)
             sample_map = tuple(
@@ -293,7 +303,7 @@ class GroupedOrcaGenerationService:
         sample_map_path = run_root / "sample-map.json"
         _write_json(plan_path, run.plan.to_dict())
         _write_json(sample_map_path, {
-            "schema_version": 1,
+            "schema_version": 2 if geometry.backend_id == "build123d" else 1,
             "plate_code": run.plate_code,
             "physical_labels_in_mesh": True,
             "physical_plate_code_in_mesh": True,
@@ -318,12 +328,16 @@ class GroupedOrcaGenerationService:
                 "candidate_id": obj.candidate_id,
                 "settings": dict(obj.settings),
                 "printed_marking": obj.printed_marking,
+                "role": obj.role,
+                "geometry_metadata": dict(obj.metadata),
             })
         geometry_payload = {
-            "schema_version": 1,
+            "schema_version": 2 if geometry.backend_id == "build123d" else 1,
             "plate_code": run.plate_code,
             "backend_id": geometry.backend_id,
             "backend_version": geometry.backend_version,
+            "recipe_spec": geometry.metadata.get("recipe_spec"),
+            "provenance": dict(geometry.metadata),
             "voxel_mm": geometry.layout.voxel_mm,
             "physical_labels_in_mesh": True,
             "physical_plate_code_in_mesh": True,
@@ -354,7 +368,13 @@ class GroupedOrcaGenerationService:
                 for item in geometry.layout.connectors
             ],
             "connections": [
-                {"sample_label": item.sample_label, "target_name": item.target_name, "contact_area_mm2": item.contact_area_mm2}
+                {
+                    "sample_label": item.sample_label,
+                    "source_name": item.source_name,
+                    "target_name": item.target_name,
+                    "contact_area_mm2": item.contact_area_mm2,
+                    "separation_type": item.separation_type,
+                }
                 for item in geometry.connections
             ],
             "objects": mesh_records,
@@ -427,16 +447,18 @@ class GroupedOrcaGenerationService:
             layout_proof = validate_grouped_plate_layout_gcode(
                 result.gcode_files[0], geometry, run.profiles.printer.settings
             )
+            feature_proof = validate_build123d_feature_toolpaths(result.gcode_files[0], geometry)
             preflight = validate_gcode_preflight(
                 result.gcode_files[0],
                 run.profiles.printer.settings,
                 run.profiles.filament.settings,
                 run.profiles.process.settings,
             )
-            messages = [*proof.messages, *layout_proof.messages]
+            messages = [*proof.messages, *layout_proof.messages, *feature_proof.messages]
             validation = {
                 "state": (
                     "plate_layout_failed" if not layout_proof.valid
+                    else "geometry_features_failed" if not feature_proof.valid
                     else "sample_settings_validated" if proof.valid
                     else "sample_settings_failed"
                 ),
@@ -451,6 +473,7 @@ class GroupedOrcaGenerationService:
                     for label, evidence in proof.samples.items()
                 },
                 "sliced_layout": layout_proof.to_dict(),
+                "sliced_geometry_features": feature_proof.to_dict(),
                 "gcode_preflight": preflight.to_dict(),
                 "print_ready": False,
                 "print_readiness_reasons": [
@@ -473,12 +496,15 @@ class GroupedOrcaGenerationService:
                     ),
                 ],
             }
-            status = "settings_validated" if proof.valid and layout_proof.valid else "validation_failed"
+            status = "settings_validated" if proof.valid and layout_proof.valid and feature_proof.valid else "validation_failed"
 
         validation["geometry"] = _geometry_validation(geometry)
         if "sliced_layout" in validation:
             validation["geometry"]["sliced_layout"] = validation["sliced_layout"]
             validation["geometry"]["valid"] = validation["geometry"]["valid"] and validation["sliced_layout"]["valid"]
+        if "sliced_geometry_features" in validation:
+            validation["geometry"]["sliced_geometry_features"] = validation["sliced_geometry_features"]
+            validation["geometry"]["valid"] = validation["geometry"]["valid"] and validation["sliced_geometry_features"]["valid"]
         validation["geometry_bounds"] = {
             "checked_against": "resolved machine printable_area or bed_size plus explicit bed_exclude_area",
             "within_bounds": bool(validation.get("sliced_layout", {}).get("valid", False)),
@@ -541,7 +567,7 @@ class GroupedOrcaGenerationService:
         }
         validation["orca"] = contract
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2 if geometry.backend_id == "build123d" else 1,
             "run_id": run.run_id,
             "plate_code": run.plate_code,
             "module_id": run.plan.module_id,
@@ -667,7 +693,10 @@ def _bounds_dict(bounds) -> dict[str, float]:
 
 
 def _geometry_validation(geometry: PlateGeometry) -> dict[str, Any]:
-    report = PlateGeometryBackend().validate(geometry)
+    try:
+        report = get_geometry_backend(geometry.backend_id, geometry.backend_version).validate(geometry)
+    except GeometryBackendUnavailable as exc:
+        report = GeometryValidation(False, (str(exc),))
     return {
         "valid": report.valid,
         "messages": list(report.messages),
@@ -679,4 +708,5 @@ def _geometry_validation(geometry: PlateGeometry) -> dict[str, Any]:
         "physical_labels_in_mesh": report.valid and all(obj.printed_marking == obj.sample_label for obj in geometry.objects if obj.sample_label is not None),
         "physical_plate_code_in_mesh": report.valid and any(obj.sample_label is None and obj.printed_marking == geometry.layout.plate_code for obj in geometry.objects),
         "bounds_mm": _bounds_dict(geometry.layout.bounds),
+        "provenance": dict(geometry.metadata),
     }

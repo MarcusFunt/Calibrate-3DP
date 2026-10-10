@@ -37,13 +37,25 @@ class FakeGroupedOrca:
             manifest = json.loads(archive.read("Metadata/calibrate3dp-run.json"))
         lines = []
         samples = {sample["label"]: sample for sample in manifest["samples"]}
+        objects = {item["name"]: item for item in manifest.get("objects", [])}
         for name, bounds in manifest["geometry"]["object_bounds_mm"].items():
             shift_x = self.sample_a_shift_mm if name == "Sample-A" else 0.0
             lines.extend((
                 f"; printing object {name} id:1 copy 0",
-                f"G1 X{bounds[0] + shift_x:g} Y{bounds[1]:g} E0.01 ; geometry",
-                f"G1 X{bounds[3] + shift_x:g} Y{bounds[4]:g} E0.01 ; geometry",
+                f"G1 X{bounds[0] + shift_x:g} Y{bounds[1]:g} Z0.2 E0.01 ; geometry",
+                f"G1 X{bounds[3] + shift_x:g} Y{bounds[4]:g} Z0.2 E0.01 ; geometry",
             ))
+            metadata = objects.get(name, {}).get("metadata", {})
+            text_bounds = metadata.get("text_bounds_mm")
+            if name.startswith("Sample-") and len(text_bounds or ()) == 4:
+                center_x = (text_bounds[0] + text_bounds[2]) / 2 + shift_x
+                center_y = (text_bounds[1] + text_bounds[3]) / 2
+                lines.append(f"G1 X{center_x:g} Y{center_y:g} Z0.2 E0.01 ; underside label")
+            elif name == "Plate-Identifier" and len(text_bounds or ()) == 4:
+                center_x = (text_bounds[0] + text_bounds[2]) / 2
+                center_y = (text_bounds[1] + text_bounds[3]) / 2
+                top_z = float(metadata["text_top_z_mm"])
+                lines.append(f"G1 X{center_x:g} Y{center_y:g} Z{top_z:g} E0.01 ; plaque top label")
             sample = samples.get(name)
             if sample is not None:
                 settings = sample["settings"]
@@ -141,7 +153,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertEqual(child.sample_map[0]["candidate_id"], child.plan.candidates[0].candidate_id)
             self.assertTrue(child.validation["geometry"]["valid"])
             self.assertEqual(child.validation["geometry"]["sample_count"], 1)
-            self.assertEqual(child.validation["geometry"]["object_count"], 2)
+            self.assertEqual(child.validation["geometry"]["object_count"], 3)
             self.assertEqual(repository.get_run_config_link(child.run_id)["relation_type"], "confirmation")
 
     def test_review_uses_real_layout_without_allocating_a_plate_code(self):
@@ -246,7 +258,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertTrue(all(item["physical_label_present"] is True for item in run.sample_map))
             self.assertTrue(all(item["physical_plate_code_present"] is True for item in run.sample_map))
             self.assertTrue(run.validation["geometry"]["valid"])
-            self.assertEqual(run.validation["geometry"]["object_count"], 10)
+            self.assertEqual(run.validation["geometry"]["object_count"], 11)
             self.assertEqual(run.validation["state"], "sample_settings_validated")
             self.assertIn("dependency_snapshot", run.validation)
             self.assertEqual(run.validation["dependency_snapshot"]["schema_version"], 1)
@@ -258,7 +270,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertTrue(any(item.relative_path.endswith("manifest.json") for item in run.artifacts))
             self.assertTrue(any(item.relative_path.endswith("plate_1.gcode") for item in run.artifacts))
             stl_artifacts = [item for item in run.artifacts if item.relative_path.endswith(".stl")]
-            self.assertEqual(len(stl_artifacts), 10)
+            self.assertEqual(len(stl_artifacts), 11)
             self.assertTrue(all(item.media_type == "model/stl" for item in stl_artifacts))
             self.assertTrue(any(item.relative_path.endswith("geometry.json") for item in run.artifacts))
             for artifact in run.artifacts:

@@ -13,16 +13,27 @@ from typing import Any, Mapping
 
 from calibrate3dp.app.models import ProfileSelection
 from calibrate3dp.experiments import ExperimentPlan
+from calibrate3dp.geometry.font_asset import FONT_ASSET_ID, FONT_RELATIVE_PATH, FONT_SHA256, FONT_STYLE
+from calibrate3dp.geometry.specs import GeometryRecipeSpec
 
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 _PROFILE_ROLES = frozenset({"printer", "process", "filament"})
 _SWEEP_KEYS = ("ironing_flow", "ironing_speed")
-_LAYOUT_KEYS = frozenset({
+_V1_LAYOUT_KEYS = frozenset({
     "strategy", "rows", "columns", "geometry_backend", "geometry_backend_version",
     "margin_mm", "specimen_width_mm", "specimen_depth_mm", "specimen_height_mm",
     "gap_mm", "connector_width_mm", "connector_height_mm", "connector_gap_mm",
     "frame_width_mm", "voxel_mm", "label_pixel_mm", "code_pixel_mm",
+})
+_V2_LAYOUT_KEYS = _V1_LAYOUT_KEYS | frozenset({
+    "identifier_corner", "label_pocket_width_mm", "label_pocket_depth_mm",
+    "label_pocket_depth_z_mm", "label_text_size_mm", "identifier_width_mm",
+    "identifier_depth_mm", "identifier_thickness_mm", "identifier_text_size_mm",
+    "identifier_relief_mm", "identifier_tab_width_mm",
+    "mesh_linear_tolerance_mm", "mesh_angular_tolerance_rad", "vertex_weld_tolerance_mm",
+    "font_asset_id", "font_relative_path", "font_sha256", "font_style",
+    "recipe_id", "recipe_version", "layout_version",
 })
 
 
@@ -36,7 +47,7 @@ def default_layout_options() -> dict[str, Any]:
         "strategy": "connected-grid",
         "rows": 3,
         "columns": 3,
-        "geometry_backend": "stdlib-voxel",
+        "geometry_backend": "build123d",
         "geometry_backend_version": "1",
         "margin_mm": 4.8,
         "specimen_width_mm": 30.0,
@@ -50,6 +61,27 @@ def default_layout_options() -> dict[str, Any]:
         "voxel_mm": 0.4,
         "label_pixel_mm": 0.8,
         "code_pixel_mm": 0.8,
+        "identifier_corner": "front_left",
+        "label_pocket_width_mm": 12.0,
+        "label_pocket_depth_mm": 8.0,
+        "label_pocket_depth_z_mm": 0.8,
+        "label_text_size_mm": 5.2,
+        "identifier_width_mm": 42.0,
+        "identifier_depth_mm": 14.0,
+        "identifier_thickness_mm": 1.6,
+        "identifier_text_size_mm": 4.5,
+        "identifier_relief_mm": 0.5,
+        "identifier_tab_width_mm": 1.2,
+        "mesh_linear_tolerance_mm": 0.05,
+        "mesh_angular_tolerance_rad": 0.1,
+        "vertex_weld_tolerance_mm": 1e-7,
+        "font_asset_id": FONT_ASSET_ID,
+        "font_relative_path": FONT_RELATIVE_PATH,
+        "font_sha256": FONT_SHA256,
+        "font_style": FONT_STYLE,
+        "recipe_id": "ironing.flat_coupon",
+        "recipe_version": "2",
+        "layout_version": "2",
     }
 
 
@@ -70,6 +102,7 @@ class SavedExperimentConfiguration:
     parent_run_id: str | None = None
     parent_assessment_revision_id: str | None = None
     parent_candidate_id: str | None = None
+    schema_version: int = CONFIG_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         for field_name in ("config_id", "experiment_id", "printer_id", "material_id"):
@@ -82,9 +115,11 @@ class SavedExperimentConfiguration:
             raise ExperimentConfigurationError("configuration requires a grouped ironing plan")
         if not isinstance(self.layout_options, Mapping):
             raise ExperimentConfigurationError("layout_options must be an object")
+        if type(self.schema_version) is not int or self.schema_version not in {1, CONFIG_SCHEMA_VERSION}:
+            raise ExperimentConfigurationError("unsupported experiment configuration schema_version")
         object.__setattr__(self, "created_at_utc", _timestamp(self.created_at_utc))
         self._validate_profile_hashes()
-        object.__setattr__(self, "layout_options", MappingProxyType(_validated_layout(self.layout_options)))
+        object.__setattr__(self, "layout_options", MappingProxyType(_validated_layout(self.layout_options, self.schema_version)))
         self._validate_plan()
         if self.relation_type not in {"initial", "refinement", "confirmation"}:
             raise ExperimentConfigurationError("relation_type must be initial, refinement, or confirmation")
@@ -103,6 +138,13 @@ class SavedExperimentConfiguration:
     @property
     def source_profile_hashes(self) -> Mapping[str, str]:
         return self.profile_selection.source_hashes
+
+    @property
+    def geometry_spec(self) -> GeometryRecipeSpec | None:
+        """Typed, normalized CAD recipe inputs; historical v1 remains voxel-only."""
+        if self.schema_version == 1:
+            return None
+        return GeometryRecipeSpec.from_layout_options(self.layout_options)
 
     @property
     def fixed_settings(self) -> Mapping[str, Any]:
@@ -133,7 +175,7 @@ class SavedExperimentConfiguration:
         }
         if not isinstance(payload, Mapping) or set(payload) != required:
             raise ExperimentConfigurationError("experiment configuration has an invalid shape")
-        if type(payload["schema_version"]) is not int or payload["schema_version"] != CONFIG_SCHEMA_VERSION:
+        if type(payload["schema_version"]) is not int or payload["schema_version"] not in {1, CONFIG_SCHEMA_VERSION}:
             raise ExperimentConfigurationError("unsupported experiment configuration schema_version")
         if not isinstance(payload["profile_selection"], Mapping) or not isinstance(payload["plan"], Mapping):
             raise ExperimentConfigurationError("configuration profiles and plan must be objects")
@@ -154,6 +196,7 @@ class SavedExperimentConfiguration:
                 parent_run_id=payload["parent_run_id"],
                 parent_assessment_revision_id=payload["parent_assessment_revision_id"],
                 parent_candidate_id=payload["parent_candidate_id"],
+                schema_version=payload["schema_version"],
             )
         except (TypeError, ValueError, KeyError) as exc:
             if isinstance(exc, ExperimentConfigurationError):
@@ -168,7 +211,7 @@ class SavedExperimentConfiguration:
 
     def _payload(self) -> dict[str, Any]:
         return {
-            "schema_version": CONFIG_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "config_id": self.config_id,
             "experiment_id": self.experiment_id,
             "revision_no": self.revision_no,
@@ -223,11 +266,12 @@ class SavedExperimentConfiguration:
                 )
 
 
-def _validated_layout(layout: Mapping[str, Any]) -> dict[str, Any]:
+def _validated_layout(layout: Mapping[str, Any], schema_version: int) -> dict[str, Any]:
     values = dict(layout)
-    if set(values) != _LAYOUT_KEYS:
-        missing = sorted(_LAYOUT_KEYS - set(values))
-        extra = sorted(set(values) - _LAYOUT_KEYS)
+    expected_keys = _V1_LAYOUT_KEYS if schema_version == 1 else _V2_LAYOUT_KEYS
+    if set(values) != expected_keys:
+        missing = sorted(expected_keys - set(values))
+        extra = sorted(set(values) - expected_keys)
         raise ExperimentConfigurationError(
             "layout options have invalid fields: "
             + "; ".join(filter(None, (
@@ -237,11 +281,33 @@ def _validated_layout(layout: Mapping[str, Any]) -> dict[str, Any]:
         )
     if values["strategy"] != "connected-grid":
         raise ExperimentConfigurationError("unsupported layout strategy; expected connected-grid")
-    if values["geometry_backend"] != "stdlib-voxel" or values["geometry_backend_version"] != "1":
-        raise ExperimentConfigurationError("unsupported geometry backend or version")
+    expected_backend = "stdlib-voxel" if schema_version == 1 else "build123d"
+    if values["geometry_backend"] != expected_backend or values["geometry_backend_version"] != "1":
+        raise ExperimentConfigurationError(
+            "schema v1 configurations require stdlib-voxel@1" if schema_version == 1
+            else "schema v2 configurations require build123d@1"
+        )
     if type(values["rows"]) is not int or values["rows"] != 3 or type(values["columns"]) is not int or values["columns"] != 3:
         raise ExperimentConfigurationError("connected ironing layout must have three rows and columns")
-    for name in _LAYOUT_KEYS - {"strategy", "rows", "columns", "geometry_backend", "geometry_backend_version"}:
+    non_numeric = {"strategy", "rows", "columns", "geometry_backend", "geometry_backend_version"}
+    if schema_version == 2:
+        corner = values["identifier_corner"]
+        if corner not in {"front_left", "front_right", "back_left", "back_right"}:
+            raise ExperimentConfigurationError("identifier_corner must select one of the four plaque corners")
+        if tuple(values[name] for name in ("font_asset_id", "font_relative_path", "font_sha256", "font_style")) != (
+            FONT_ASSET_ID, FONT_RELATIVE_PATH, FONT_SHA256, FONT_STYLE
+        ):
+            raise ExperimentConfigurationError("geometry font identity does not match the pinned asset")
+        if tuple(values[name] for name in ("recipe_id", "recipe_version", "layout_version")) != (
+            "ironing.flat_coupon", "2", "2"
+        ):
+            raise ExperimentConfigurationError("unsupported schema-v2 geometry recipe or layout version")
+        non_numeric.add("identifier_corner")
+        non_numeric.update({
+            "font_asset_id", "font_relative_path", "font_sha256", "font_style",
+            "recipe_id", "recipe_version", "layout_version",
+        })
+    for name in expected_keys - non_numeric:
         _positive_number(values[name], name)
     return values
 
