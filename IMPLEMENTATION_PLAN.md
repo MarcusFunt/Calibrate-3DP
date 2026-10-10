@@ -174,12 +174,15 @@ The active implementation worktree `codex/v1-design-orca-qt` is based on `origin
 - DependencyEvaluator.evaluate(context, records) returns a tuple of CalibrationState.
 - DependencyEvaluator.affected_by_change(changed_keys, graph) returns affected calibration IDs.
 
-- [ ] Model requirements as typed rules, not hard-coded UI ordering.
-- [ ] Record exact profile values and prior results assumed by each run.
-- [ ] Implement explicit prerequisites, recommendations, optional overrides with a required reason, and transitive invalidation.
-- [ ] Test that changing nozzle size invalidates the relevant records, while changing an unrelated setting leaves records current.
-- [ ] Test cycles, unknown prerequisites, missing context, and an explicit user override.
-- [ ] Use Orca and firmware guidance as initial defaults; version and qualify each rule by context.
+- [x] Model requirements as typed rules, not hard-coded UI ordering.
+- [x] Record exact profile values and prior results assumed by each run for the implemented ironing flow; its current ruleset has no calibration-result prerequisite.
+- [x] Implement explicit prerequisites, recommendations, and transitive invalidation.
+- [ ] Implement optional overrides that require a saved reason.
+- [x] Test that a relevant input change invalidates dependent records while unrelated context leaves ironing current.
+- [x] Test cycles, unknown prerequisites, and missing context.
+- [ ] Test explicit user override behavior.
+- [x] Version the current ironing ruleset.
+- [ ] Record Orca and firmware guidance as qualified defaults for each calibration context.
 
 ### Task 5: Define the in-process calibration module contract
 
@@ -353,11 +356,11 @@ The active implementation worktree `codex/v1-design-orca-qt` is based on `origin
 - Create or complete: Qt Printer Library, Printer Workspace, Calibration Graph, plate-code lookup, and run-detail pages.
 - Test: tests/test_qt_printer_workspace.py, tests/test_qt_calibration_graph.py, and tests/test_qt_code_lookup.py
 
-- [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration statuses and prerequisites are not yet implemented.
-- [ ] Render the graph from DependencyEvaluator output. The UI does not calculate prerequisite logic itself.
-- [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. A dependency graph/state evaluator is not yet implemented.
+- [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration status is available only for ironing flow × speed; other families are not exposed as graph nodes.
+- [x] Render the available workflow status and reasons from DependencyEvaluator output. The UI does not calculate prerequisite logic itself; a full graph across all calibration families remains open.
+- [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. The workspace now also presents the service-evaluated calibration state.
 - [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
-- [ ] Test calibration status transitions and graph rendering with fake repositories and fake slicer services.
+- [x] Test calibration status transitions and available workflow rendering with offscreen Qt tests using a fake state service/repository and existing Orca setup fixtures.
 
 ### Task 15: Complete acceptance matrix and release evidence
 
