@@ -528,7 +528,7 @@ class GroupedOrcaGenerationService:
         identity = reconcile_orca_identity(capabilities, gcode_header)
         identity_status = identity.status
         identity_message = (
-            "Orca CLI and G-code labels reconcile to OrcaSlicer 2.3.0, but this binary/profile/platform entry is not yet qualified in the support matrix."
+            f"Orca CLI and G-code labels reconcile to OrcaSlicer {identity.release_version}, but this binary/profile/platform entry is not yet qualified in the support matrix."
             if identity.status == "reconciled"
             else "CLI and generated G-code version identities remain unresolved; no support-matrix claim is made."
         )

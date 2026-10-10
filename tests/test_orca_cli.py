@@ -67,6 +67,64 @@ class OrcaCliTests(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs["capture_output"])
         self.assertTrue(run.call_args.kwargs["text"])
 
+    def test_probe_uses_exact_release_fingerprint_when_help_is_silent(self):
+        expected_hash = "481c9f071fdb3cda033d1677ce7a9442c41a25cbeeb42cfc808af179b4dc85c3"
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "orca-slicer.exe"
+            executable.write_bytes(b"verified OrcaSlicer 2.4.2 executable fixture")
+            with (
+                patch(
+                    "calibrate3dp.orca_cli.subprocess.run",
+                    return_value=subprocess.CompletedProcess([str(executable), "--help"], 0, "", ""),
+                ) as run,
+                patch("calibrate3dp.orca_cli._fingerprint_executable", return_value=(expected_hash, 303104)),
+                patch("calibrate3dp.orca_cli._windows_executable_versions", return_value=(None, None)),
+            ):
+                capabilities = OrcaCli(executable).probe()
+
+        self.assertIsNone(capabilities.version_banner)
+        self.assertEqual(capabilities.capability_source, "verified_binary_fingerprint")
+        self.assertEqual(capabilities.executable_sha256, expected_hash)
+        self.assertTrue({"--slice", "--outputdir", "--datadir", "--load-settings", "--load-filaments", "--arrange", "--orient"}.issubset(capabilities.options))
+        run.assert_called_once()
+
+    def test_silent_help_from_unrecognized_binary_remains_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "orca-slicer.exe"
+            executable.write_bytes(b"unrecognized executable")
+            with (
+                patch(
+                    "calibrate3dp.orca_cli.subprocess.run",
+                    return_value=subprocess.CompletedProcess([str(executable), "--help"], 0, "", ""),
+                ),
+                patch("calibrate3dp.orca_cli._fingerprint_executable", return_value=("b" * 64, 19)),
+                patch("calibrate3dp.orca_cli._windows_executable_versions", return_value=(None, None)),
+            ):
+                with self.assertRaisesRegex(OrcaCliError, "--help returned no text"):
+                    OrcaCli(executable).probe()
+
+    def test_reconciles_help_silent_release_fingerprint_with_gcode_version(self):
+        capabilities = OrcaCliCapabilities(
+            executable=Path("orca-slicer.exe"),
+            version_banner=None,
+            options=frozenset({"--slice", "--outputdir", "--datadir", "--load-settings", "--load-filaments"}),
+            help_returncode=0,
+            executable_sha256="481c9f071fdb3cda033d1677ce7a9442c41a25cbeeb42cfc808af179b4dc85c3",
+            executable_size_bytes=303104,
+        )
+
+        identity = reconcile_orca_identity(capabilities, "OrcaSlicer 2.4.2 on 2026-10-10 at 18:41:56")
+
+        self.assertEqual(identity.status, "reconciled")
+        self.assertEqual(identity.release_version, "2.4.2")
+        self.assertEqual(identity.source_url, "https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.4.2")
+        self.assertIsNone(identity.version_banner)
+        self.assertFalse(identity.support_claim)
+
+        mismatch = reconcile_orca_identity(capabilities, "OrcaSlicer 2.4.1")
+        self.assertEqual(mismatch.status, "unresolved")
+        self.assertIn("executable fingerprint mapping identifies 2.4.2", mismatch.explanation)
+
     def test_probe_records_executable_hash_and_raw_version_outputs(self):
         help_text = (
             "OrcaSlicer-01.10.01.50:\n"

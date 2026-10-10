@@ -1,7 +1,8 @@
 """Headless OrcaSlicer capability probing and isolated G-code slicing.
 
-The wrapper uses only options observed in the installed CLI help, never invokes
-a shell, and requires fresh output and data directories for each slice.
+The wrapper uses options observed in CLI help or in a fingerprint-pinned
+release contract, never invokes a shell, and requires fresh output and data
+directories for each slice.
 """
 
 from __future__ import annotations
@@ -36,6 +37,17 @@ _KNOWN_ORCA_ENGINE_RELEASES = {
         "https://github.com/SoftFever/OrcaSlicer/blob/v2.3.0/version.inc",
     ),
 }
+_KNOWN_SILENT_HELP_EXECUTABLES = {
+    # This exact executable was extracted from the official v2.4.2 Windows x64
+    # portable package. That package's published ZIP SHA-256 was verified at
+    # installation; only this exact binary may use the help-silent fallback.
+    "481c9f071fdb3cda033d1677ce7a9442c41a25cbeeb42cfc808af179b4dc85c3": (
+        "2.4.2",
+        303104,
+        "https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.4.2",
+    ),
+}
+_SILENT_HELP_REQUIRED_OPTIONS = _REQUIRED_OPTIONS | frozenset({"--arrange", "--orient"})
 _ORCA_BANNER = re.compile(r"^OrcaSlicer-(?P<version>[0-9]+(?:\.[0-9]+){3}):?$", re.IGNORECASE)
 _ORCA_RELEASE_TEXT = re.compile(r"^OrcaSlicer\s+(?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)", re.IGNORECASE)
 
@@ -58,6 +70,7 @@ class OrcaCliCapabilities:
     version_output: str | None = None
     version_returncode: int | None = None
     version_error: str | None = None
+    capability_source: str = "help_output"
 
 
 @dataclass(frozen=True)
@@ -77,6 +90,7 @@ class OrcaIdentityEvidence:
     explanation: str
     source_url: str | None
     support_claim: bool = False
+    capability_source: str = "help_output"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -93,6 +107,7 @@ class OrcaIdentityEvidence:
             "explanation": self.explanation,
             "source_url": self.source_url,
             "support_claim": self.support_claim,
+            "capability_source": self.capability_source,
         }
 
 
@@ -157,6 +172,11 @@ def reconcile_orca_identity(
     engine_version = banner_match.group("version") if banner_match else None
     gcode_version = gcode_match.group("version") if gcode_match else None
     known = _KNOWN_ORCA_ENGINE_RELEASES.get(engine_version or "")
+    executable_hash = (capabilities.executable_sha256 or "").casefold()
+    silent_help_release = _KNOWN_SILENT_HELP_EXECUTABLES.get(executable_hash)
+    if engine_version is None and silent_help_release is not None:
+        release, _size, source = silent_help_release
+        known = (release, source)
     release_version, source_url = known if known is not None else (None, None)
     explanations: list[str] = []
 
@@ -164,15 +184,24 @@ def reconcile_orca_identity(
         explanations.append("the executable fingerprint is unavailable")
     elif not re.fullmatch(r"[0-9a-fA-F]{64}", capabilities.executable_sha256):
         explanations.append("the executable fingerprint is malformed")
-    if engine_version is None:
+    if engine_version is None and silent_help_release is None:
         explanations.append("the CLI banner is missing or unrecognized")
     elif known is None:
         explanations.append(f"CLI engine version {engine_version} has no recorded release mapping")
+    elif (
+        engine_version is not None
+        and silent_help_release is not None
+        and known[0] != silent_help_release[0]
+    ):
+        explanations.append(
+            f"the CLI banner maps to {known[0]}, but the executable fingerprint maps to {silent_help_release[0]}"
+        )
     if gcode_version is None:
         explanations.append("the G-code identity is missing or unrecognized")
     elif release_version is not None and gcode_version != release_version:
+        mapping_source = "CLI engine" if engine_version is not None else "executable fingerprint"
         explanations.append(
-            f"the CLI engine mapping identifies {release_version}, but G-code identifies {gcode_version}"
+            f"the {mapping_source} mapping identifies {release_version}, but G-code identifies {gcode_version}"
         )
 
     for label, value in (
@@ -190,11 +219,18 @@ def reconcile_orca_identity(
 
     reconciled = not explanations and release_version is not None
     if reconciled:
-        explanation = (
-            f"The CLI engine label {engine_version} and G-code label {gcode_version} both map to "
-            f"OrcaSlicer {release_version} in the cited upstream version file. The executable hash "
-            "identifies this local binary; it does not authenticate its publisher or establish printer support."
-        )
+        if engine_version is not None:
+            explanation = (
+                f"The CLI engine label {engine_version} and G-code label {gcode_version} both map to "
+                f"OrcaSlicer {release_version} in the cited upstream version file. The executable hash "
+                "identifies this local binary; it does not authenticate its publisher or establish printer support."
+            )
+        else:
+            explanation = (
+                f"The CLI banner is unavailable; the exact executable SHA-256 matches the recorded "
+                f"OrcaSlicer {release_version} portable executable, and the G-code label matches that "
+                "release. This fingerprint mapping does not authenticate the publisher or establish printer support."
+            )
     else:
         explanation = "; ".join(explanations) or "No documented mapping reconciles the reported identities."
 
@@ -213,6 +249,7 @@ def reconcile_orca_identity(
         explanation=explanation,
         source_url=source_url if reconciled else None,
         support_claim=False,
+        capability_source=capabilities.capability_source,
     )
 
 
@@ -242,10 +279,31 @@ class OrcaCli:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise OrcaCliError(f"could not probe OrcaSlicer at {self.executable}: {exc}") from exc
         output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
-        capabilities = parse_orca_help(output, returncode=completed.returncode)
         executable_path = self.executable.resolve(strict=False)
         executable_sha256, executable_size_bytes = _fingerprint_executable(executable_path)
         file_version, product_version = _windows_executable_versions(executable_path)
+        if completed.returncode == 0 and not output.strip():
+            fingerprint_release = _KNOWN_SILENT_HELP_EXECUTABLES.get(
+                (executable_sha256 or "").casefold()
+            )
+            if fingerprint_release is None or fingerprint_release[1] != executable_size_bytes:
+                capabilities = parse_orca_help(output, returncode=completed.returncode)
+            else:
+                release, _size, _source = fingerprint_release
+                capabilities = OrcaCliCapabilities(
+                    executable=None,
+                    version_banner=None,
+                    options=_SILENT_HELP_REQUIRED_OPTIONS,
+                    help_returncode=completed.returncode,
+                    executable_sha256=executable_sha256,
+                    executable_size_bytes=executable_size_bytes,
+                    file_version=file_version,
+                    product_version=product_version,
+                    raw_help_output=output,
+                    capability_source="verified_binary_fingerprint",
+                )
+        else:
+            capabilities = parse_orca_help(output, returncode=completed.returncode)
         version_output = None
         version_returncode = None
         version_error = None
@@ -283,6 +341,7 @@ class OrcaCli:
             version_output=version_output,
             version_returncode=version_returncode,
             version_error=version_error,
+            capability_source=capabilities.capability_source,
         )
 
     def build_slice_argv(
