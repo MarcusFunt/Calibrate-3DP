@@ -20,6 +20,10 @@ from calibrate3dp.app.services.experiment_configuration_service import (
 from calibrate3dp.app.services.experiment_service import ExperimentService, ExperimentServiceError
 from calibrate3dp.app.services.grouped_layout import grouped_ironing_layout_request
 from calibrate3dp.app.services.library_service import LibraryService
+from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
+from calibrate3dp.calibration.dependencies import DependencyEvaluator
+from calibrate3dp.calibration.ironing import IRONING_DEPENDENCY_GRAPH
+from calibrate3dp.calibration.state import CalibrationState
 from calibrate3dp.domain.experiment_config import SavedExperimentConfiguration
 from calibrate3dp.domain.records import ArtifactRecord, CalibrationRunRecord, utc_now
 from calibrate3dp.geometry.layout import PlateLayoutError
@@ -45,6 +49,16 @@ class GroupedOrcaGenerationError(RuntimeError):
     """Raised when a grouped ironing run cannot be safely recorded or sliced."""
 
 
+class CalibrationBlockedError(GroupedOrcaGenerationError):
+    """The current printer, material, profile, or slicer context blocks generation."""
+
+    def __init__(self, state: CalibrationState) -> None:
+        self.state = state
+        self.reasons = state.reasons
+        message = "; ".join(state.reasons) or "required calibration context is unavailable"
+        super().__init__(f"Ironing calibration is blocked: {message}")
+
+
 class GroupedOrcaGenerationService:
     """Create connected, versioned grouped runs and slice through Orca.
 
@@ -60,6 +74,7 @@ class GroupedOrcaGenerationService:
         cli_provider: Callable[[], OrcaCli | None],
         adapter: OrcaProfileAdapter | None = None,
         experiment_service: ExperimentService | None = None,
+        calibration_state_service: CalibrationStateService | None = None,
         timeout_seconds: float = 300,
     ) -> None:
         if not isinstance(library, LibraryService):
@@ -75,6 +90,20 @@ class GroupedOrcaGenerationService:
         self._experiments = experiment_service or ExperimentService()
         self.configurations = ExperimentConfigurationService(
             library, experiment_service=self._experiments
+        )
+        if calibration_state_service is not None and not isinstance(
+            calibration_state_service, CalibrationStateService
+        ):
+            raise TypeError("calibration_state_service must be a CalibrationStateService")
+        if (
+            calibration_state_service is not None
+            and calibration_state_service.repository is not self.repository
+        ):
+            raise ValueError("calibration state service must use the generation library repository")
+        self.calibration_state_service = calibration_state_service or CalibrationStateService(
+            library,
+            DependencyEvaluator(IRONING_DEPENDENCY_GRAPH),
+            slicer_available=lambda: self._cli_provider() is not None,
         )
         self._timeout_seconds = timeout_seconds
 
@@ -119,7 +148,22 @@ class GroupedOrcaGenerationService:
     ) -> CalibrationRunRecord:
         """Generate only from a saved immutable revision whose profile context is current."""
         configuration = self.repository.get_configuration(config_id)
-        self._verify_configuration_context(configuration)
+        state = self.calibration_state_service.evaluate_configuration(configuration)
+        if not state.can_start:
+            raise CalibrationBlockedError(state)
+        try:
+            self._verify_configuration_context(configuration)
+        except GroupedOrcaGenerationError as exc:
+            refreshed = self.calibration_state_service.evaluate_configuration(configuration)
+            if not refreshed.can_start:
+                raise CalibrationBlockedError(refreshed) from exc
+            raise
+        dependency_snapshot = self.calibration_state_service.snapshot_for(configuration)
+        snapshot_state = dependency_snapshot.get("state")
+        if not isinstance(snapshot_state, Mapping) or snapshot_state.get("can_start") is not True:
+            raise CalibrationBlockedError(
+                self.calibration_state_service.evaluate_configuration(configuration)
+            )
         run_id = f"run-{uuid4().hex}"
         geometry: PlateGeometry | None = None
         geometry_error: str | None = None
@@ -164,6 +208,7 @@ class GroupedOrcaGenerationService:
                     "state": "pending",
                     "geometry": _geometry_validation(geometry) if geometry is not None else {"valid": False, "messages": [geometry_error or "Geometry was not built."]},
                     "print_ready": False,
+                    "dependency_snapshot": dependency_snapshot,
                 },
             )
             try:
@@ -442,6 +487,7 @@ class GroupedOrcaGenerationService:
             "bounds_mm": geometry_bounds.to_dict(),
             "keep_out_count": len(machine_keep_out_polygons(run.profiles.printer.settings)),
         }
+        validation["dependency_snapshot"] = run.validation["dependency_snapshot"]
 
         gcode_header = None
         if result.gcode_files:
@@ -526,7 +572,12 @@ class GroupedOrcaGenerationService:
         )
 
     def _finalize_failure(self, run: CalibrationRunRecord, run_root: Path, message: str) -> CalibrationRunRecord:
-        validation = {"state": "generation_failed", "messages": [message], "print_ready": False}
+        validation = {
+            "state": "generation_failed",
+            "messages": [message],
+            "print_ready": False,
+            "dependency_snapshot": run.validation["dependency_snapshot"],
+        }
         try:
             if run_root.is_dir():
                 logs_dir = run_root / "logs"

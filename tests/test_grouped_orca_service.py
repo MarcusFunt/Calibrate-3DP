@@ -8,7 +8,7 @@ import zipfile
 import unittest
 
 from calibrate3dp.app.services.experiment_configuration_service import ExperimentConfigurationService
-from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationError, GroupedOrcaGenerationService
+from calibrate3dp.app.services.grouped_orca_service import CalibrationBlockedError, GroupedOrcaGenerationError, GroupedOrcaGenerationService
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.app.services.profile_service import ProfileService
 from calibrate3dp.app.services.assessment_service import AssessmentService
@@ -184,6 +184,8 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertEqual(repository.get_run_config_link(run.run_id)["config_id"], configuration.config_id)
             self.assertEqual(run.plan.to_dict(), configuration.plan.to_dict())
             self.assertEqual(run.profiles.to_dict(), configuration.profile_selection.to_dict())
+            self.assertEqual(run.validation["dependency_snapshot"]["schema_version"], 1)
+            self.assertEqual(run.validation["dependency_snapshot"]["calibration_id"], "ironing")
             geometry_artifact = next(
                 item for item in run.artifacts if item.relative_path.endswith("geometry/geometry.json")
             )
@@ -223,10 +225,12 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             )
             generation = GroupedOrcaGenerationService(library, cli_provider=FakeGroupedOrca)
 
-            with self.assertRaisesRegex(GroupedOrcaGenerationError, "changed since review"):
+            with self.assertRaises(CalibrationBlockedError) as blocked:
                 generation.generate_from_configuration(configuration.config_id)
 
+            self.assertTrue(any("profile_hash_state.process" in item for item in blocked.exception.reasons))
             self.assertEqual(repository.list_runs(), ())
+            self.assertEqual(list(repository.runs_root.iterdir()), [])
 
     def test_import_save_generate_and_reopen_grouped_run(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -244,6 +248,8 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertTrue(run.validation["geometry"]["valid"])
             self.assertEqual(run.validation["geometry"]["object_count"], 10)
             self.assertEqual(run.validation["state"], "sample_settings_validated")
+            self.assertIn("dependency_snapshot", run.validation)
+            self.assertEqual(run.validation["dependency_snapshot"]["schema_version"], 1)
             self.assertTrue(run.validation["sliced_layout"]["valid"])
             self.assertEqual(run.validation["sliced_layout"]["xy_translation_mm"], [0.0, 0.0])
             self.assertTrue(run.validation["geometry_bounds"]["within_bounds"])
@@ -282,7 +288,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertTrue(any("Sample-A G-code X bounds" in message for message in run.validation["messages"]))
             self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
 
-    def test_missing_orca_creates_a_failed_run_record_with_recovery_message(self):
+    def test_missing_orca_blocks_before_allocating_a_run_or_artifacts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             profile_root = root / "orca"
@@ -301,13 +307,13 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
                 display_name="PLA", nozzle_context="0.4 mm", filament_choice=profiles.choices("filament")[0],
             )
 
-            run = GroupedOrcaGenerationService(library, cli_provider=lambda: None).generate_ironing(
-                printer.printer_id, material.material_id
-            )
+            generation = GroupedOrcaGenerationService(library, cli_provider=lambda: None)
+            with self.assertRaises(CalibrationBlockedError) as blocked:
+                generation.generate_ironing(printer.printer_id, material.material_id)
 
-            self.assertEqual(run.status, "generation_failed")
-            self.assertIn("Select an OrcaSlicer CLI", run.validation["messages"][0])
-            self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
+            self.assertTrue(any("slicer" in item.lower() for item in blocked.exception.reasons))
+            self.assertEqual(repository.list_runs(), ())
+            self.assertEqual(list(repository.runs_root.iterdir()), [])
 
     def test_cancelled_slice_is_saved_as_not_ready(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -322,6 +328,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertEqual(run.status, "cancelled")
             self.assertEqual(run.validation["state"], "cancelled")
             self.assertFalse(run.validation["print_ready"])
+            self.assertIn("dependency_snapshot", run.validation)
             self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
 
     def test_failed_slice_is_saved_as_not_ready(self):
@@ -337,6 +344,7 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertEqual(run.status, "generation_failed")
             self.assertEqual(run.validation["state"], "orca_failed")
             self.assertFalse(run.validation["print_ready"])
+            self.assertIn("dependency_snapshot", run.validation)
             self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
 
 

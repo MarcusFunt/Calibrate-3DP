@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
         *,
         library_service: LibraryService | None = None,
         generation_service: GroupedOrcaGenerationService | None = None,
+        calibration_state_service=None,
         settings_service: AppSettingsService | None = None,
         profile_service: ProfileService | None = None,
     ) -> None:
@@ -418,7 +419,16 @@ class MainWindow(QMainWindow):
         library.add_printer_requested.connect(self._add_printer)
         self.library_page = library
         self._add_page(AppPage.PRINTER_LIBRARY, library)
-        self.workspace_page = PrinterWorkspacePage(library_service, generation_service)
+        shared_calibration_state = calibration_state_service
+        if shared_calibration_state is None and generation_service is not None:
+            shared_calibration_state = getattr(
+                generation_service, "calibration_state_service", None
+            )
+        self.workspace_page = PrinterWorkspacePage(
+            library_service,
+            generation_service,
+            calibration_state_service=shared_calibration_state,
+        )
         self.workspace_page.add_material_requested.connect(self._add_material)
         self.workspace_page.run_finished.connect(self._refresh_history)
         self._add_page(AppPage.PRINTER_WORKSPACE, self.workspace_page)

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
+from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
 from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
 from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
 from calibrate3dp.app.services.library_service import LibraryService
@@ -271,10 +272,17 @@ class PrinterWorkspacePage(QWidget):
         library: LibraryService | None = None,
         generation: GroupedOrcaGenerationService | None = None,
         parent: QWidget | None = None,
+        *,
+        calibration_state_service: CalibrationStateService | None = None,
     ) -> None:
         super().__init__(parent)
         self.library = library
         self.generation = generation
+        self.calibration_state_service = (
+            calibration_state_service
+            if calibration_state_service is not None
+            else getattr(generation, "calibration_state_service", None)
+        )
         self.printer_id: str | None = None
         self._cancel_event: Event | None = None
         self._task: _RunTask | None = None

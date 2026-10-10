@@ -42,10 +42,13 @@ def run(argv: Sequence[str] | None = None) -> int:
     application = create_application(argv)
     from .main_window import MainWindow
     from .view_models import PrinterLibraryUnavailableError, PrinterSummary
+    from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
     from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
     from calibrate3dp.app.services.library_service import LibraryService
     from calibrate3dp.app.services.profile_service import ProfileService
     from calibrate3dp.app.services.settings_service import AppSettingsService
+    from calibrate3dp.calibration.dependencies import DependencyEvaluator
+    from calibrate3dp.calibration.ironing import IRONING_DEPENDENCY_GRAPH
     from calibrate3dp.orca_cli import OrcaCli
     from calibrate3dp.storage.library_store import LibraryRepository
     from calibrate3dp.storage.session_store import SessionRepository
@@ -77,11 +80,21 @@ def run(argv: Sequence[str] | None = None) -> int:
             return None
         return OrcaCli(executable)
 
-    generation = GroupedOrcaGenerationService(library, cli_provider=cli_provider)
+    calibration_state = CalibrationStateService(
+        library,
+        DependencyEvaluator(IRONING_DEPENDENCY_GRAPH),
+        slicer_available=lambda: cli_provider() is not None,
+    )
+    generation = GroupedOrcaGenerationService(
+        library,
+        cli_provider=cli_provider,
+        calibration_state_service=calibration_state,
+    )
     window = MainWindow(
         SavedPrinterLibrary(),
         library_service=library,
         generation_service=generation,
+        calibration_state_service=calibration_state,
         settings_service=settings_service,
         profile_service=profiles,
     )

@@ -150,6 +150,9 @@ class DependencyEvaluatorTests(unittest.TestCase):
                 "ironing-process", "ironing", "input", "ironing_profile", "present",
                 invalidates=("ironing_profile",),
             ),
+            DependencyRule(
+                "ironing-slicer", "ironing", "input", "slicer_state", "equals", "available",
+            ),
         ))
 
         affected = DependencyEvaluator.affected_by_change({"nozzle_diameter"}, graph)
@@ -157,6 +160,10 @@ class DependencyEvaluatorTests(unittest.TestCase):
         self.assertEqual(affected, frozenset({"pressure_advance", "retraction"}))
         self.assertNotIn("ironing", affected)
         self.assertEqual(DependencyEvaluator.affected_by_change({"unrelated_key"}, graph), frozenset())
+        self.assertEqual(
+            DependencyEvaluator.affected_by_change({"slicer_state"}, graph), frozenset(),
+            "generation-only availability must not stale saved calibration evidence",
+        )
 
     def test_active_run_precedes_input_staleness_and_settings_run_needs_assessment(self):
         graph = DependencyGraph.from_rules((

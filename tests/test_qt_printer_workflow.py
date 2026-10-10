@@ -10,9 +10,12 @@ from unittest.mock import patch
 
 from calibrate3dp.app.services.experiment_service import ExperimentService
 from calibrate3dp.app.services.experiment_configuration_service import ExperimentConfigurationService
+from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.app.services.profile_service import ProfileService
+from calibrate3dp.calibration.dependencies import DependencyEvaluator
+from calibrate3dp.calibration.ironing import IRONING_DEPENDENCY_GRAPH
 from calibrate3dp.app.qt.view_models import PrinterSummary
 from calibrate3dp.domain.records import CalibrationRunRecord, utc_now
 from calibrate3dp.storage.library_store import LibraryRepository
@@ -39,6 +42,11 @@ class SavingFakeGeneration:
     def __init__(self, library: LibraryService) -> None:
         self.library = library
         self.configurations = ExperimentConfigurationService(library)
+        self.calibration_state_service = CalibrationStateService(
+            library,
+            DependencyEvaluator(IRONING_DEPENDENCY_GRAPH),
+            slicer_available=lambda: True,
+        )
 
     def prepare_ironing_configuration(self, printer_id: str, material_id: str):
         return self.configurations.prepare_ironing(printer_id, material_id)
@@ -139,12 +147,17 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         material_dialog._save()
         self.assertIsNotNone(material_dialog.record)
 
+        generation = SavingFakeGeneration(self.library)
         window = MainWindow(
             SavedPrinterLibrary(self.library),
             library_service=self.library,
-            generation_service=SavingFakeGeneration(self.library),
+            generation_service=generation,
         )
         self.addCleanup(window.close)
+        self.assertIs(
+            window.workspace_page.calibration_state_service,
+            generation.calibration_state_service,
+        )
         library_page = window.library_page
         library_page.rows[printer.printer_id].click()
         library_page.open_button.click()

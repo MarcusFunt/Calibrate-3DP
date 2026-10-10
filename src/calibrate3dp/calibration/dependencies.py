@@ -185,9 +185,7 @@ class DependencyEvaluator:
             raise TypeError("changed_keys must contain strings")
         affected: set[str] = set()
         for rule in graph.rules:
-            if rule.source_kind == "input" and (
-                rule.source_key in changed or changed.intersection(rule.invalidates)
-            ):
+            if rule.source_kind == "input" and changed.intersection(rule.invalidates):
                 affected.add(rule.calibration_id)
 
         grew = True
