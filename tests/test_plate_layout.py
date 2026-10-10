@@ -37,7 +37,15 @@ def _request(**changes):
 
 
 def _build123d_request(**changes):
-    return _request(geometry_backend="build123d", geometry_backend_version="1", **changes)
+    return _request(
+        geometry_backend="build123d",
+        geometry_backend_version="1",
+        specimen_depth_mm=25.0,
+        specimen_height_mm=4.0,
+        label_text_size_mm=6.0,
+        identifier_text_size_mm=5.0,
+        **changes,
+    )
 
 
 class PlateLayoutTests(unittest.TestCase):
@@ -57,6 +65,38 @@ class PlateLayoutTests(unittest.TestCase):
         self.assertGreater(layout.bounds.max_x, layout.sample_placements[-1].x_mm + 30.0)
         self.assertGreater(layout.bounds.max_y, layout.sample_placements[-1].y_mm + 30.0)
         self.assertEqual(layout.plate_code, "7K3P9D")
+
+    def test_build123d_coupon_defaults_are_30_by_25_by_4_with_edge_clearance(self):
+        request = _build123d_request()
+
+        layout = layout_plate(request)
+
+        sample = layout.sample_placements[0]
+        self.assertEqual((sample.width_mm, sample.depth_mm, sample.height_mm), (30.0, 25.0, 4.0))
+        connectors = [item for item in layout.connectors if item.sample_label == sample.label]
+        self.assertEqual(len(connectors), 8)
+        along_depth = sorted({
+            item.rectangle.min_y - sample.y_mm
+            for item in connectors
+            if item.orientation in ("left", "right")
+        })
+        along_width = sorted({
+            item.rectangle.min_x - sample.x_mm
+            for item in connectors
+            if item.orientation in ("front", "back")
+        })
+        self.assertEqual(along_depth, [4.0, 18.6])
+        self.assertEqual(along_width, [4.0, 23.6])
+
+    def test_legacy_voxel_layout_keeps_its_original_coupon_dimensions(self):
+        request = _request()
+
+        layout = layout_plate(request)
+
+        sample = layout.sample_placements[0]
+        self.assertEqual((sample.width_mm, sample.depth_mm, sample.height_mm), (30.0, 30.0, 6.4))
+        with self.assertRaisesRegex(PlateLayoutError, "exact multiple of voxel_mm"):
+            layout_plate(_request(specimen_depth_mm=25.0))
 
     def test_plate_fits_tight_rectangular_and_large_beds_and_irregular_printable_area(self):
         request = _request()

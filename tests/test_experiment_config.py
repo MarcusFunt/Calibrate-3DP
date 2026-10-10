@@ -84,12 +84,24 @@ class SavedExperimentConfigurationTests(unittest.TestCase):
         }
         legacy = {key: value for key, value in layout.items() if key in legacy_keys}
         legacy["geometry_backend"] = "stdlib-voxel"
+        legacy.update({
+            "specimen_width_mm": 30.0,
+            "specimen_depth_mm": 30.0,
+            "specimen_height_mm": 6.4,
+            "voxel_mm": 0.4,
+        })
         configuration = _configuration(layout_options=legacy, schema_version=1)
 
         restored = SavedExperimentConfiguration.from_dict(configuration.to_dict())
 
         self.assertEqual(restored.schema_version, 1)
         self.assertEqual(restored.layout_options["geometry_backend"], "stdlib-voxel")
+        self.assertEqual(
+            tuple(restored.layout_options[key] for key in (
+                "specimen_width_mm", "specimen_depth_mm", "specimen_height_mm"
+            )),
+            (30.0, 30.0, 6.4),
+        )
         self.assertEqual(restored.to_dict(), configuration.to_dict())
 
     def test_new_configuration_defaults_to_versioned_build123d_geometry(self):
@@ -98,6 +110,16 @@ class SavedExperimentConfigurationTests(unittest.TestCase):
         self.assertEqual(configuration.schema_version, 2)
         self.assertEqual(configuration.to_dict()["schema_version"], 2)
         self.assertEqual(configuration.layout_options["geometry_backend"], "build123d")
+        self.assertEqual(
+            (
+                configuration.layout_options["specimen_width_mm"],
+                configuration.layout_options["specimen_depth_mm"],
+                configuration.layout_options["specimen_height_mm"],
+            ),
+            (30.0, 25.0, 4.0),
+        )
+        self.assertEqual(configuration.layout_options["label_text_size_mm"], 6.0)
+        self.assertEqual(configuration.layout_options["identifier_text_size_mm"], 5.0)
         self.assertEqual(configuration.geometry_spec.recipe_id, "ironing.flat_coupon")
         self.assertEqual(configuration.geometry_spec.recipe_version, "2")
         self.assertEqual(configuration.geometry_spec.identifier.corner, "front_left")

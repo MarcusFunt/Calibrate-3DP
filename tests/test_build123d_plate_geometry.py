@@ -29,6 +29,10 @@ def _request(*, count: int = 9, corner: str = "front_left") -> PlateLayoutReques
         geometry_backend="build123d",
         geometry_backend_version="1",
         identifier_corner=corner,
+        specimen_depth_mm=25.0,
+        specimen_height_mm=4.0,
+        label_text_size_mm=6.0,
+        identifier_text_size_mm=5.0,
     )
 
 
@@ -47,16 +51,26 @@ class Build123dPlateGeometryTests(unittest.TestCase):
         self.assertTrue(backend.validate(geometry).valid, backend.validate(geometry).messages)
         samples = [item for item in geometry.objects if item.sample_label]
         self.assertEqual(len(samples), 9)
+        self.assertTrue(all(
+            (item.width_mm, item.depth_mm, item.height_mm) == (30.0, 25.0, 4.0)
+            for item in geometry.layout.sample_placements
+        ))
         for sample in samples:
             self.assertEqual(sample.role, "sample")
             self.assertEqual(sample.metadata["label_mode"], "underside-pocketed-emboss")
             self.assertEqual(sample.metadata["label_view_direction"], [0, 0, -1])
             self.assertEqual(sample.metadata["label_orientation_matrix"], [[1, 0, 0], [0, -1, 0], [0, 0, -1]])
             self.assertEqual(sample.mesh.bounds[2], 0)
-            self.assertAlmostEqual(sample.mesh.bounds[5], 6.4, places=5)
+            self.assertAlmostEqual(sample.mesh.bounds[5], 4.0, places=5)
             self.assertEqual(sample.metadata["solid_count"], 1)
             self.assertGreater(sample.metadata["pocket_depth_mm"], 0)
-            self.assertGreater(sample.metadata["label_text_size_mm"], 0)
+            self.assertEqual(sample.metadata["label_text_size_mm"], 6.0)
+            pocket = sample.metadata["pocket_bounds_mm"]
+            text = sample.metadata["text_bounds_mm"]
+            self.assertGreaterEqual(text[0], pocket[0])
+            self.assertGreaterEqual(text[1], pocket[1])
+            self.assertLessEqual(text[2], pocket[2])
+            self.assertLessEqual(text[3], pocket[3])
 
         frame = next(item for item in geometry.objects if item.name == "Plate-Frame")
         identifier = next(item for item in geometry.objects if item.name == "Plate-Identifier")
@@ -64,6 +78,13 @@ class Build123dPlateGeometryTests(unittest.TestCase):
         self.assertEqual(identifier.role, "identifier")
         self.assertEqual(identifier.printed_marking, "R2F0I5")
         self.assertEqual(identifier.metadata["corner"], "front_left")
+        self.assertEqual(identifier.metadata["text_size_mm"], 5.0)
+        plaque = identifier.metadata["plaque_bounds_mm"]
+        code = identifier.metadata["text_bounds_mm"]
+        self.assertGreaterEqual(code[0], plaque[0])
+        self.assertGreaterEqual(code[1], plaque[1])
+        self.assertLessEqual(code[2], plaque[2])
+        self.assertLessEqual(code[3], plaque[3])
         self.assertEqual(identifier.mesh.bounds[2], 0)
         self.assertGreater(identifier.mesh.bounds[5], identifier.metadata["thickness_mm"])
         self.assertEqual(identifier.metadata["solid_count"], 1)

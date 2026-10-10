@@ -217,6 +217,12 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
             self.assertEqual(
                 [item.label for item in review.layout.sample_placements], list("ABCDEFGHI")
             )
+            self.assertTrue(all(
+                (item.width_mm, item.depth_mm, item.height_mm) == (30.0, 25.0, 4.0)
+                for item in review.layout.sample_placements
+            ))
+            self.assertEqual(review.configuration.layout_options["label_text_size_mm"], 6.0)
+            self.assertEqual(review.configuration.layout_options["identifier_text_size_mm"], 5.0)
             self.assertEqual(repository.list_runs(), ())
 
     def test_saved_configuration_generates_and_reopens_the_exact_linked_revision(self):

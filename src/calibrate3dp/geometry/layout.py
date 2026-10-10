@@ -235,12 +235,18 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         "gap_mm", "connector_width_mm", "connector_height_mm", "connector_gap_mm",
         "frame_width_mm", "voxel_mm", "label_pixel_mm", "code_pixel_mm",
     )
+    requires_voxel_alignment = (
+        request.geometry_backend,
+        request.geometry_backend_version,
+    ) == ("stdlib-voxel", "1")
     for name in positive_dimensions:
         value = getattr(request, name)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise PlateLayoutError(f"{name} must be finite positive")
+        # Only the legacy voxel backend quantizes coupon geometry to this grid.
+        # build123d preserves exact BREP dimensions such as the 25 mm coupon side.
         units = value / request.voxel_mm
-        if abs(units - round(units)) > 1e-8:
+        if requires_voxel_alignment and abs(units - round(units)) > 1e-8:
             raise PlateLayoutError(f"{name} must be an exact multiple of voxel_mm")
     for sample in request.samples:
         for setting in ("ironing_flow", "ironing_speed"):
@@ -324,6 +330,7 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         for side, (low, high) in (("left", left_gap), ("right", right_gap)):
             if high <= low:
                 raise PlateLayoutError("connector geometry has no clearance between sample and frame")
+            # For the current 2.4 mm tabs, 6.4 mm includes the 4 mm end clearance.
             for offset in (4.0, request.specimen_depth_mm - 6.4):
                 rect = Rect2D(low, sample.y_mm + offset, high, sample.y_mm + offset + request.connector_width_mm)
                 connectors.append(_connector(sample.label, rect, side, request))

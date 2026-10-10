@@ -397,6 +397,10 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
             keep_outs=machine_keep_out_polygons(machine.settings),
             geometry_backend="build123d",
             geometry_backend_version="1",
+            specimen_depth_mm=25.0,
+            specimen_height_mm=4.0,
+            label_text_size_mm=6.0,
+            identifier_text_size_mm=5.0,
         )
         geometry = Build123dPlateGeometryBackend().build(request)
         backend_report = Build123dPlateGeometryBackend().validate(geometry)
