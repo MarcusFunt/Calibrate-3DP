@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 )
 
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
+from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
+from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.app.services.profile_service import ProfileService
 from calibrate3dp.app.services.settings_service import AppSettingsService
@@ -239,19 +241,18 @@ class _RunSignals(QObject):
 
 
 class _RunTask(QRunnable):
-    def __init__(self, service: GroupedOrcaGenerationService, printer_id: str, material_id: str, cancel_event: Event) -> None:
+    def __init__(self, service: GroupedOrcaGenerationService, config_id: str, cancel_event: Event) -> None:
         super().__init__()
         self.service = service
-        self.printer_id = printer_id
-        self.material_id = material_id
+        self.config_id = config_id
         self.cancel_event = cancel_event
         self.signals = _RunSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            record = self.service.generate_ironing(
-                self.printer_id, self.material_id, cancel_event=self.cancel_event
+            record = self.service.generate_from_configuration(
+                self.config_id, cancel_event=self.cancel_event
             )
         except Exception as exc:
             self.signals.failed.emit(str(exc))
@@ -277,6 +278,7 @@ class PrinterWorkspacePage(QWidget):
         self.printer_id: str | None = None
         self._cancel_event: Event | None = None
         self._task: _RunTask | None = None
+        self.review_dialog: ExperimentConfigurationDialog | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 36, 40, 36)
         layout.setSpacing(13)
@@ -299,8 +301,21 @@ class PrinterWorkspacePage(QWidget):
         material_row.addWidget(self.add_material_button)
         layout.addLayout(material_row)
 
+        saved_configuration_row = QHBoxLayout()
+        saved_configuration_row.addWidget(QLabel("Saved ironing draft"))
+        self.saved_configuration_choice = QComboBox()
+        self.saved_configuration_choice.setAccessibleName("Open a saved ironing configuration draft")
+        self.saved_configuration_choice.currentIndexChanged.connect(self._sync_saved_configuration_controls)
+        saved_configuration_row.addWidget(self.saved_configuration_choice, 1)
+        self.open_configuration_button = QPushButton("Open draft…")
+        self.open_configuration_button.setObjectName("secondaryAction")
+        self.open_configuration_button.clicked.connect(self._open_saved_configuration)
+        saved_configuration_row.addWidget(self.open_configuration_button)
+        layout.addLayout(saved_configuration_row)
+        self.material_choice.currentIndexChanged.connect(self._refresh_saved_configurations)
+
         actions = QHBoxLayout()
-        self.generate_button = QPushButton("Generate grouped ironing sweep")
+        self.generate_button = QPushButton("Configure grouped ironing sweep")
         self.generate_button.setObjectName("primaryAction")
         self.generate_button.clicked.connect(self._start_generation)
         self.cancel_button = QPushButton("Cancel")
@@ -321,6 +336,7 @@ class PrinterWorkspacePage(QWidget):
         self.run_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.run_table.horizontalHeader().setStretchLastSection(True)
+        self.run_table.cellDoubleClicked.connect(self._open_run_by_row)
         layout.addWidget(self.run_table, 1)
         if self.library is None or self.generation is None:
             self.generate_button.setEnabled(False)
@@ -373,6 +389,8 @@ class PrinterWorkspacePage(QWidget):
             )
             for column, value in enumerate(values):
                 self.run_table.setItem(row, column, QTableWidgetItem(value))
+            self.run_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, record.run_id)
+        self._refresh_saved_configurations()
         self.generate_button.setEnabled(bool(materials) and self.generation is not None)
         if not materials:
             self.state.setText("Add a filament profile before generating a calibration run.")
@@ -381,13 +399,86 @@ class PrinterWorkspacePage(QWidget):
         if self.printer_id is not None:
             self.add_material_requested.emit(self.printer_id)
 
+    def _open_run_by_row(self, row: int, _column: int) -> None:
+        item = self.run_table.item(row, 0)
+        run_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        self._open_run(str(run_id)) if run_id else None
+
+    def _open_run(self, run_id: str) -> None:
+        if self.library is not None:
+            dialog = ExperimentDetailsDialog(
+                self.library, run_id, self, generation_service=self.generation
+            )
+            dialog.exec()
+
     def _start_generation(self) -> None:
         material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
         if self.generation is None or self.printer_id is None or not material_id:
             self.state.setText("Select a saved printer and material first.")
             return
+        try:
+            review = self.generation.prepare_ironing_configuration(
+                self.printer_id, str(material_id)
+            )
+        except Exception as exc:
+            self.state.setText(f"Configuration review could not be prepared: {exc}")
+            return
+        dialog = ExperimentConfigurationDialog(review, self.generation, self)
+        self.review_dialog = dialog
+        if dialog.exec() != dialog.DialogCode.Accepted or dialog.configuration is None:
+            self.review_dialog = None
+            self.refresh()
+            return
+        self._start_run_generation(dialog.configuration.config_id)
+
+    def _refresh_saved_configurations(self, *_args) -> None:
+        self.saved_configuration_choice.clear()
+        material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
+        if self.library is not None and self.printer_id and material_id:
+            try:
+                configurations = self.library.repository.list_unlinked_initial_configurations(
+                    self.printer_id, str(material_id)
+                )
+                for configuration in configurations:
+                    flow = next(item.values for item in configuration.plan.dimensions if item.key == "ironing_flow")
+                    speed = next(item.values for item in configuration.plan.dimensions if item.key == "ironing_speed")
+                    self.saved_configuration_choice.addItem(
+                        f"Revision {configuration.revision_no} · flow {', '.join(map(str, flow))} · speed {', '.join(map(str, speed))}",
+                        configuration.config_id,
+                    )
+            except Exception as exc:
+                self.state.setText(f"Saved configuration drafts could not be loaded: {exc}")
+        self._sync_saved_configuration_controls()
+
+    def _sync_saved_configuration_controls(self, *_args) -> None:
+        self.open_configuration_button.setEnabled(
+            self.generation is not None and self.saved_configuration_choice.currentData() is not None
+        )
+
+    def _open_saved_configuration(self) -> None:
+        config_id = self.saved_configuration_choice.currentData()
+        if self.library is None or self.generation is None or not config_id:
+            return
+        try:
+            configuration = self.library.repository.get_configuration(str(config_id))
+            review = self.generation.configurations.review(configuration)
+        except Exception as exc:
+            self.state.setText(f"Saved configuration could not be reopened: {exc}")
+            return
+        dialog = ExperimentConfigurationDialog(
+            review, self.generation, self, saved_configuration=configuration
+        )
+        self.review_dialog = dialog
+        if dialog.exec() != dialog.DialogCode.Accepted or dialog.configuration is None:
+            self.review_dialog = None
+            self.refresh()
+            return
+        self._start_run_generation(dialog.configuration.config_id)
+
+    def _start_run_generation(self, config_id: str) -> None:
         self._cancel_event = Event()
-        task = _RunTask(self.generation, self.printer_id, str(material_id), self._cancel_event)
+        task = _RunTask(self.generation, config_id, self._cancel_event)
+        self.review_dialog = None
         task.signals.completed.connect(self._generation_completed)
         task.signals.failed.connect(self._generation_failed)
         self._task = task
@@ -453,9 +544,10 @@ class PrinterWorkspacePage(QWidget):
 class RunHistoryPage(QWidget):
     """Searchable list and six-character plate-code lookup."""
 
-    def __init__(self, library: LibraryService | None, parent: QWidget | None = None) -> None:
+    def __init__(self, library: LibraryService | None, parent: QWidget | None = None, *, generation_service=None) -> None:
         super().__init__(parent)
         self.library = library
+        self.generation_service = generation_service
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 36, 40, 36)
         layout.setSpacing(14)
@@ -485,6 +577,7 @@ class RunHistoryPage(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.cellDoubleClicked.connect(self._open_run_by_row)
         layout.addWidget(self.table, 1)
         self.refresh()
 
@@ -499,6 +592,7 @@ class RunHistoryPage(QWidget):
             values = (run.plate_code, printers.get(run.printer_id, run.printer_id), materials.get(run.material_id, run.material_id), _run_state_label(run), run.created_at_utc)
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
+            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, run.run_id)
 
     def _lookup(self) -> None:
         if self.library is None:
@@ -526,6 +620,19 @@ class RunHistoryPage(QWidget):
             lines.append("Remaining print-readiness checks:")
             lines.extend(f"  • {reason}" for reason in reasons)
         self.lookup_result.setPlainText("\n".join(lines))
+        self._open_run(run.run_id)
+
+    def _open_run_by_row(self, row: int, _column: int) -> None:
+        item = self.table.item(row, 0)
+        run_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        self._open_run(str(run_id)) if run_id else None
+
+    def _open_run(self, run_id: str) -> None:
+        if self.library is not None:
+            dialog = ExperimentDetailsDialog(
+                self.library, run_id, self, generation_service=self.generation_service
+            )
+            dialog.exec()
 
 
 class NewCalibrationPage(QWidget):
@@ -541,7 +648,7 @@ class NewCalibrationPage(QWidget):
         heading = QLabel("New Calibration")
         heading.setObjectName("pageTitle")
         copy = QLabel(
-            "The current end-to-end experiment is an ironing flow and speed sweep. Open a saved printer workspace, choose a matching material, review the sample values, then generate with OrcaSlicer."
+            "The current end-to-end experiment is an ironing flow and speed sweep. Open a saved printer workspace, choose a matching material, edit the A–I candidate values, review the connected plate, then generate with OrcaSlicer."
         )
         copy.setObjectName("bodyCopy")
         copy.setWordWrap(True)

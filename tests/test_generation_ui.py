@@ -216,7 +216,8 @@ class GenerationUiTests(unittest.TestCase):
 
         self.assertFalse(page.can_start)
         self.assertFalse(self.dpg.items["generation_start"]["enabled"])
-        self.assertEqual(page.preview.plate_count, 9)
+        self.assertEqual(page.preview.plate_count, 1)
+        self.assertEqual(len(page.preview.candidate_map), 9)
         self.assertIsNone(page.preview.estimated_duration)
         self.assertIn("slicing service", page.unavailable_reason.casefold())
 

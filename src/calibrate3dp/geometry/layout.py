@@ -1,4 +1,4 @@
-"""Validated, deterministic layout for a connected nine-sample plate."""
+"""Validated, deterministic layout for connected calibration sample plates."""
 
 from __future__ import annotations
 
@@ -159,14 +159,15 @@ def require_layout_fits_printable_area(
 
 
 def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
-    """Place nine labeled samples, a code rail, and identical breakaway tabs."""
+    """Place one to nine labeled samples, a code rail, and breakaway tabs."""
     if not isinstance(request, PlateLayoutRequest):
         raise PlateLayoutError("request must be a PlateLayoutRequest")
-    if len(request.samples) != 9 or tuple(item.label for item in request.samples) != tuple("ABCDEFGHI"):
-        raise PlateLayoutError("sample labels must be the nine ordered labels A through I")
+    labels = tuple("ABCDEFGHI"[:len(request.samples)])
+    if not 1 <= len(request.samples) <= 9 or tuple(item.label for item in request.samples) != labels:
+        raise PlateLayoutError("sample labels must be one to nine ordered labels starting with A")
     if any(not isinstance(item.candidate_id, str) or not item.candidate_id.strip() for item in request.samples):
         raise PlateLayoutError("sample candidate IDs must be unique non-empty strings")
-    if len({item.candidate_id for item in request.samples}) != 9:
+    if len({item.candidate_id for item in request.samples}) != len(request.samples):
         raise PlateLayoutError("sample candidate IDs must be unique non-empty strings")
     if not isinstance(request.plate_code, str) or len(request.plate_code) != 6 or not request.plate_code.isascii() or not request.plate_code.isalnum() or not all(character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for character in request.plate_code):
         raise PlateLayoutError("plate code must contain six uppercase letters or digits")
@@ -200,6 +201,8 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
     if request.connector_gap_mm * 2 + request.frame_width_mm > request.gap_mm + 1e-8:
         raise PlateLayoutError("connector and frame widths do not fit the sample gap")
 
+    columns = min(3, len(request.samples))
+    rows = (len(request.samples) + columns - 1) // columns
     pitch_x = request.specimen_width_mm + request.gap_mm
     pitch_y = request.specimen_depth_mm + request.gap_mm
     start_x = request.margin_mm + request.frame_width_mm + request.connector_gap_mm
@@ -208,45 +211,49 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         SamplePlacement(
             label=sample.label,
             candidate_id=sample.candidate_id,
-            row=index // 3,
-            column=index % 3,
-            x_mm=start_x + (index % 3) * pitch_x,
-            y_mm=start_y + (index // 3) * pitch_y,
+            row=index // columns,
+            column=index % columns,
+            x_mm=start_x + (index % columns) * pitch_x,
+            y_mm=start_y + (index // columns) * pitch_y,
             width_mm=request.specimen_width_mm,
             depth_mm=request.specimen_depth_mm,
             height_mm=request.specimen_height_mm,
         )
         for index, sample in enumerate(request.samples)
     )
-    edge_coordinates = (
+    x_edges = (
         request.margin_mm,
-        *(start_x + column * pitch_x + request.specimen_width_mm + request.connector_gap_mm for column in range(2)),
-        start_x + 2 * pitch_x + request.specimen_width_mm + request.connector_gap_mm,
+        *(start_x + column * pitch_x + request.specimen_width_mm + request.connector_gap_mm for column in range(columns - 1)),
+        start_x + (columns - 1) * pitch_x + request.specimen_width_mm + request.connector_gap_mm,
     )
-    # The first and last rails align to the outer margin; internal rails occupy
-    # the center of each 8 mm gap, leaving equal-length 2.8 mm breakaway tabs.
+    y_edges = (
+        request.margin_mm,
+        *(start_y + row * pitch_y + request.specimen_depth_mm + request.connector_gap_mm for row in range(rows - 1)),
+        start_y + (rows - 1) * pitch_y + request.specimen_depth_mm + request.connector_gap_mm,
+    )
+    # Outside rails align to the margin; internal rails sit in each sample gap.
     vertical_rails = tuple(
         Rect2D(
-            (request.margin_mm if index == 0 else edge_coordinates[index]),
+            x_edges[index],
             request.margin_mm,
-            (request.margin_mm + request.frame_width_mm if index == 0 else edge_coordinates[index] + request.frame_width_mm),
-            _outer_edge(start_y, request.specimen_depth_mm, pitch_y, request.connector_gap_mm, request.frame_width_mm),
+            x_edges[index] + request.frame_width_mm,
+            _outer_edge(start_y, request.specimen_depth_mm, pitch_y, request.connector_gap_mm, request.frame_width_mm, rows),
         )
-        for index in range(4)
+        for index in range(columns + 1)
     )
     # Explicit horizontal bands use the same x extent as the complete frame.
     min_x = request.margin_mm
-    max_x = _outer_edge(start_x, request.specimen_width_mm, pitch_x, request.connector_gap_mm, request.frame_width_mm)
+    max_x = _outer_edge(start_x, request.specimen_width_mm, pitch_x, request.connector_gap_mm, request.frame_width_mm, columns)
     min_y = request.margin_mm
-    max_y = _outer_edge(start_y, request.specimen_depth_mm, pitch_y, request.connector_gap_mm, request.frame_width_mm)
+    max_y = _outer_edge(start_y, request.specimen_depth_mm, pitch_y, request.connector_gap_mm, request.frame_width_mm, rows)
     horizontal_rails = tuple(
         Rect2D(
             min_x,
-            (request.margin_mm if index == 0 else edge_coordinates[index]),
+            y_edges[index],
             max_x,
-            (request.margin_mm + request.frame_width_mm if index == 0 else edge_coordinates[index] + request.frame_width_mm),
+            y_edges[index] + request.frame_width_mm,
         )
-        for index in range(4)
+        for index in range(rows + 1)
     )
     # All rail boundaries are derived from the layout's intended 2.8 mm tab gap.
     # For a row/column, connect both sides and both front/back edges using the
@@ -318,14 +325,14 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         code_regions=code_regions,
         bounds=bounds,
         voxel_mm=request.voxel_mm,
-        findings=("Nine independent sample objects; connectors terminate at the shared frame surface.",),
+        findings=(f"{len(labels)} labeled sample object(s); connectors terminate at the shared frame surface.",),
     )
     require_layout_fits_printable_area(layout, request.printable_polygon, request.keep_outs)
     return layout
 
 
-def _outer_edge(start: float, dimension: float, pitch: float, clearance: float, rail_width: float) -> float:
-    return start + 2 * pitch + dimension + clearance + rail_width
+def _outer_edge(start: float, dimension: float, pitch: float, clearance: float, rail_width: float, count: int) -> float:
+    return start + (count - 1) * pitch + dimension + clearance + rail_width
 
 
 def _connector(label: str, rect: Rect2D, side: str, request: PlateLayoutRequest) -> ConnectorPlacement:

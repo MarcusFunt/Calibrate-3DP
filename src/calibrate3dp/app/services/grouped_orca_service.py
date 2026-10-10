@@ -13,14 +13,20 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from calibrate3dp.app.models import ProfileSelection
+from calibrate3dp.app.services.experiment_configuration_service import (
+    ExperimentConfigurationReview,
+    ExperimentConfigurationService,
+)
 from calibrate3dp.app.services.experiment_service import ExperimentService, ExperimentServiceError
+from calibrate3dp.app.services.grouped_layout import grouped_ironing_layout_request
 from calibrate3dp.app.services.library_service import LibraryService
+from calibrate3dp.domain.experiment_config import SavedExperimentConfiguration
 from calibrate3dp.domain.records import ArtifactRecord, CalibrationRunRecord, utc_now
-from calibrate3dp.geometry.layout import PlateLayoutError, PlateLayoutRequest, PlateSampleRequest
+from calibrate3dp.geometry.layout import PlateLayoutError
 from calibrate3dp.geometry.specimens import PlateGeometry, PlateGeometryBackend
+from calibrate3dp.gcode_preflight import validate_gcode_preflight
 from calibrate3dp.grouped_plate import (
     machine_keep_out_polygons,
-    machine_printable_polygon,
     require_plate_geometry_fits_machine,
     validate_grouped_ironing_gcode,
     validate_grouped_plate_layout_gcode,
@@ -29,7 +35,10 @@ from calibrate3dp.grouped_plate import (
 from calibrate3dp.orca_cli import OrcaCli, OrcaCliError, reconcile_orca_identity
 from calibrate3dp.orca_profiles import OrcaProfileAdapter
 from calibrate3dp.profiles import ResolvedProfile
-from calibrate3dp.storage.library_store import LibraryRepository
+from calibrate3dp.storage.library_store import (
+    DuplicatePlateCodeError,
+    LibraryRepository,
+)
 
 
 class GroupedOrcaGenerationError(RuntimeError):
@@ -64,6 +73,9 @@ class GroupedOrcaGenerationService:
         self._cli_provider = cli_provider
         self._adapter = adapter or OrcaProfileAdapter()
         self._experiments = experiment_service or ExperimentService()
+        self.configurations = ExperimentConfigurationService(
+            library, experiment_service=self._experiments
+        )
         self._timeout_seconds = timeout_seconds
 
     def generate_ironing(
@@ -73,55 +85,96 @@ class GroupedOrcaGenerationService:
         *,
         cancel_event=None,
     ) -> CalibrationRunRecord:
-        """Create, slice, verify, and retain a nine-sample ironing run."""
-        selection = self.library.resolve_selection(printer_id, material_id)
-        process_settings = dict(selection.process.settings)
-        # This first module is explicitly a top-surface ironing comparison. The
-        # active operation is captured in the plan and derived CLI profile.
-        process_settings["ironing_type"] = "top"
-        effective_process = replace(selection.process, settings=MappingProxyType(process_settings))
-        selection = replace(selection, process=effective_process)
+        """Freeze current review inputs and generate their linked grouped run."""
         try:
-            plan = self._experiments.create_initial("ironing", selection)
-        except ExperimentServiceError as exc:
+            configuration = self.configurations.prepare_ironing(printer_id, material_id).configuration
+            self.configurations.save(configuration)
+        except (ExperimentServiceError, ValueError) as exc:
+            raise GroupedOrcaGenerationError(str(exc)) from exc
+        return self.generate_from_configuration(configuration.config_id, cancel_event=cancel_event)
+
+    def prepare_ironing_configuration(
+        self,
+        printer_id: str,
+        material_id: str,
+        options=None,
+    ) -> ExperimentConfigurationReview:
+        """Return a candidate/settings/layout review without allocating a code."""
+        try:
+            return self.configurations.prepare_ironing(printer_id, material_id, options)
+        except (ExperimentServiceError, ValueError) as exc:
             raise GroupedOrcaGenerationError(str(exc)) from exc
 
+    def save_configuration(self, configuration: SavedExperimentConfiguration) -> SavedExperimentConfiguration:
+        try:
+            return self.configurations.save(configuration)
+        except (ValueError, RuntimeError) as exc:
+            raise GroupedOrcaGenerationError(str(exc)) from exc
+
+    def generate_from_configuration(
+        self,
+        config_id: str,
+        *,
+        cancel_event=None,
+    ) -> CalibrationRunRecord:
+        """Generate only from a saved immutable revision whose profile context is current."""
+        configuration = self.repository.get_configuration(config_id)
+        self._verify_configuration_context(configuration)
         run_id = f"run-{uuid4().hex}"
-        plate_code = self.repository.allocate_plate_code()
         geometry: PlateGeometry | None = None
         geometry_error: str | None = None
-        try:
-            geometry = PlateGeometryBackend().build(_geometry_request(plan, plate_code, selection.printer.settings))
-            require_plate_geometry_fits_machine(geometry, selection.printer.settings)
-        except (GroupedOrcaGenerationError, PlateLayoutError, ValueError) as exc:
-            geometry_error = str(exc)
-        sample_map = tuple(
-            {
-                "label": f"Sample-{label}",
-                "candidate_id": candidate.candidate_id,
-                "settings": dict(candidate.overrides),
-                "physical_label_present": geometry is not None,
-                "physical_plate_code_present": geometry is not None,
-            }
-            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=False)
-        )
-        run = CalibrationRunRecord(
-            run_id=run_id,
-            plate_code=plate_code,
-            printer_id=printer_id,
-            material_id=material_id,
-            status="generating",
-            created_at_utc=utc_now(),
-            plan=plan,
-            profiles=selection,
-            sample_map=sample_map,
-            validation={
-                "state": "pending",
-                "geometry": _geometry_validation(geometry) if geometry is not None else {"valid": False, "messages": [geometry_error or "Geometry was not built."]},
-                "print_ready": False,
-            },
-        )
-        self.repository.create_run(run)
+        run: CalibrationRunRecord | None = None
+        for _attempt in range(128):
+            plate_code = self.repository.allocate_plate_code()
+            try:
+                geometry = PlateGeometryBackend().build(grouped_ironing_layout_request(
+                    configuration.plan,
+                    plate_code,
+                    configuration.profile_selection.printer.settings,
+                    configuration.layout_options,
+                ))
+                require_plate_geometry_fits_machine(
+                    geometry, configuration.profile_selection.printer.settings
+                )
+                geometry_error = None
+            except (GroupedOrcaGenerationError, PlateLayoutError, ValueError) as exc:
+                geometry = None
+                geometry_error = str(exc)
+            sample_map = tuple(
+                {
+                    "label": f"Sample-{label}",
+                    "candidate_id": candidate.candidate_id,
+                    "settings": dict(candidate.overrides),
+                    "physical_label_present": geometry is not None,
+                    "physical_plate_code_present": geometry is not None,
+                }
+                for label, candidate in zip("ABCDEFGHI"[:len(configuration.plan.candidates)], configuration.plan.candidates, strict=True)
+            )
+            run = CalibrationRunRecord(
+                run_id=run_id,
+                plate_code=plate_code,
+                printer_id=configuration.printer_id,
+                material_id=configuration.material_id,
+                status="generating",
+                created_at_utc=utc_now(),
+                plan=configuration.plan,
+                profiles=configuration.profile_selection,
+                sample_map=sample_map,
+                validation={
+                    "state": "pending",
+                    "geometry": _geometry_validation(geometry) if geometry is not None else {"valid": False, "messages": [geometry_error or "Geometry was not built."]},
+                    "print_ready": False,
+                },
+            )
+            try:
+                self.repository.create_run(run, configuration_id=configuration.config_id)
+                break
+            except DuplicatePlateCodeError:
+                run = None
+                geometry = None
+                geometry_error = None
+        if run is None:
+            raise GroupedOrcaGenerationError("could not reserve a unique plate code after repeated collisions")
         run_root = self.repository.runs_root / run_id
         if geometry_error is not None or geometry is None:
             return self._finalize_failure(run, run_root, f"Connected plate geometry could not be generated: {geometry_error or 'unknown geometry error'}")
@@ -129,6 +182,37 @@ class GroupedOrcaGenerationService:
             return self._generate(run, run_root, geometry=geometry, cancel_event=cancel_event)
         except Exception as exc:
             return self._finalize_failure(run, run_root, str(exc))
+
+    def _verify_configuration_context(self, configuration: SavedExperimentConfiguration) -> None:
+        try:
+            selection = self.library.resolve_selection(
+                configuration.printer_id, configuration.material_id
+            )
+        except Exception as exc:
+            raise GroupedOrcaGenerationError(
+                f"The selected printer/material context changed since review: {exc}"
+            ) from exc
+        process_settings = dict(selection.process.settings)
+        process_settings["ironing_type"] = "top"
+        selection = replace(
+            selection,
+            process=replace(selection.process, settings=MappingProxyType(process_settings)),
+        )
+        if selection.to_dict() != configuration.profile_selection.to_dict():
+            raise GroupedOrcaGenerationError(
+                "The selected printer/material profile context changed since review; reopen the configuration review."
+            )
+        current_hashes = self.library.current_source_hashes(selection)
+        changed = [
+            role for role, expected in configuration.source_profile_hashes.items()
+            if current_hashes.get(role) != expected
+        ]
+        if changed:
+            raise GroupedOrcaGenerationError(
+                "A source profile changed since review or is no longer available ("
+                + ", ".join(sorted(changed))
+                + "); review and save the configuration again before generating."
+            )
 
     def _generate(self, run: CalibrationRunRecord, run_root: Path, *, geometry: PlateGeometry, cancel_event=None) -> CalibrationRunRecord:
         run_root.mkdir(parents=True, exist_ok=False)
@@ -199,6 +283,20 @@ class GroupedOrcaGenerationService:
             "physical_labels_in_mesh": True,
             "physical_plate_code_in_mesh": True,
             "layout_bounds_mm": _bounds_dict(geometry.layout.bounds),
+            "sample_placements": [
+                {
+                    "label": item.label,
+                    "candidate_id": item.candidate_id,
+                    "row": item.row,
+                    "column": item.column,
+                    "x_mm": item.x_mm,
+                    "y_mm": item.y_mm,
+                    "width_mm": item.width_mm,
+                    "depth_mm": item.depth_mm,
+                    "height_mm": item.height_mm,
+                }
+                for item in geometry.layout.sample_placements
+            ],
             "connectors": [
                 {
                     "sample_label": item.sample_label,
@@ -284,6 +382,12 @@ class GroupedOrcaGenerationService:
             layout_proof = validate_grouped_plate_layout_gcode(
                 result.gcode_files[0], geometry, run.profiles.printer.settings
             )
+            preflight = validate_gcode_preflight(
+                result.gcode_files[0],
+                run.profiles.printer.settings,
+                run.profiles.filament.settings,
+                run.profiles.process.settings,
+            )
             messages = [*proof.messages, *layout_proof.messages]
             validation = {
                 "state": (
@@ -302,6 +406,7 @@ class GroupedOrcaGenerationService:
                     for label, evidence in proof.samples.items()
                 },
                 "sliced_layout": layout_proof.to_dict(),
+                "gcode_preflight": preflight.to_dict(),
                 "print_ready": False,
                 "print_readiness_reasons": [
                     "A-I sample labels and the six-character code are in the mesh; human readability after printing and physical handling are unverified.",
@@ -309,6 +414,18 @@ class GroupedOrcaGenerationService:
                     "The object-to-object plate layout was checked in G-code; every emitted movement is not checked against printable areas and keep-outs.",
                     "Start/end G-code, temperature commands, and hardware safety checks are not part of this gate.",
                     "CLI and generated G-code version identities are not yet reconciled into a support-matrix claim.",
+                    *(
+                        ["The bounded G-code preflight found issues: " + "; ".join(preflight.errors)]
+                        if preflight.errors else []
+                    ),
+                    *(
+                        ["The bounded G-code preflight is incomplete: " + "; ".join(preflight.unverified)]
+                        if preflight.unverified else []
+                    ),
+                    *(
+                        ["The bounded G-code preflight does not interpret: " + ", ".join(preflight.unsupported_commands)]
+                        if preflight.unsupported_commands else []
+                    ),
                 ],
             }
             status = "settings_validated" if proof.valid and layout_proof.valid else "validation_failed"
@@ -485,24 +602,6 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _geometry_request(plan, plate_code: str, machine_settings: Mapping[str, Any]) -> PlateLayoutRequest:
-    if len(plan.candidates) != 9:
-        raise GroupedOrcaGenerationError("connected grouped plate generation requires exactly nine candidates")
-    return PlateLayoutRequest(
-        samples=tuple(
-            PlateSampleRequest(
-                label=label,
-                candidate_id=candidate.candidate_id,
-                settings=candidate.overrides,
-            )
-            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
-        ),
-        plate_code=plate_code,
-        printable_polygon=machine_printable_polygon(machine_settings),
-        keep_outs=machine_keep_out_polygons(machine_settings),
-    )
 
 
 def _bounds_dict(bounds) -> dict[str, float]:

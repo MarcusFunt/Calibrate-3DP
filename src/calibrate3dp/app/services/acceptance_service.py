@@ -39,6 +39,7 @@ class ConfirmationEvidence:
     state: GenerationState
     validation_state: ValidationState
     settings: Mapping[str, Any]
+    assessment_revision_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("run_id", "plan_id", "candidate_id"):
@@ -51,6 +52,10 @@ class ConfirmationEvidence:
             raise ValueError("confirmation validation state is invalid")
         if not isinstance(self.settings, Mapping):
             raise ValueError("confirmation settings must be a mapping")
+        if self.assessment_revision_id is not None and (
+            not isinstance(self.assessment_revision_id, str) or not self.assessment_revision_id.strip()
+        ):
+            raise ValueError("confirmation assessment_revision_id must be a non-empty string or None")
         object.__setattr__(self, "settings", MappingProxyType(dict(self.settings)))
 
 

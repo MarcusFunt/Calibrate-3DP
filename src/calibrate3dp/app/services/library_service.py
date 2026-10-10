@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 from uuid import uuid4
 
 from calibrate3dp.app.models import ProfileSelection
@@ -125,6 +125,45 @@ class LibraryService:
                 "This profile selection is saved locally; only combinations with recorded real-Orca checks are verified.",
             ),
         )
+
+    def current_source_hashes(self, selection: ProfileSelection) -> dict[str, str | None]:
+        """Re-read persisted profile sources and verify each saved inheritance chain."""
+        if not isinstance(selection, ProfileSelection):
+            raise TypeError("selection must be a ProfileSelection")
+        hashes: dict[str, str | None] = {}
+        for role, profile in (
+            ("printer", selection.printer),
+            ("process", selection.process),
+            ("filament", selection.filament),
+        ):
+            expected_hash = selection.source_hashes.get(role)
+            if not expected_hash:
+                hashes[role] = None
+                continue
+            documents = profile.chain or (profile.profile,)
+            leaf_hash: str | None = None
+            sources: dict[tuple[str, str], Any] = {}
+            try:
+                for document in documents:
+                    container, _separator, _member = document.source.partition("!")
+                    source_key = (container, document.scope)
+                    imported = sources.get(source_key)
+                    if imported is None:
+                        imported = self.profiles.adapter.load(container, scope=document.scope)
+                        sources[source_key] = imported
+                    current = next(
+                        (item for item in imported.documents if item.identity == document.identity),
+                        None,
+                    )
+                    if current is None or dict(current.raw) != dict(document.raw):
+                        raise ValueError("a selected or inherited profile source changed")
+                    if document.identity == profile.profile.identity:
+                        leaf_hash = imported.source_sha256
+            except Exception:
+                hashes[role] = None
+                continue
+            hashes[role] = leaf_hash if leaf_hash == expected_hash else None
+        return hashes
 
     def _resolve(
         self,

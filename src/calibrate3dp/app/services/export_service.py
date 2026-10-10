@@ -55,6 +55,14 @@ class ExportDraft:
     confirmation_reason: str | None
     orca_version: str | None
     profile_payload: Mapping[str, Any]
+    source_profile_path: str | None = None
+    run_id: str | None = None
+    assessment_revision_id: str | None = None
+    decision_id: str | None = None
+    safety_warnings: tuple[str, ...] = ()
+    evidence_paths: tuple[str, ...] = ()
+    orca_setup_sha256: str | None = None
+    setting_provenance: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -85,6 +93,26 @@ class ExportDraft:
         object.__setattr__(self, "compatibility_warnings", _unique_strings(self.compatibility_warnings, "warnings"))
         object.__setattr__(self, "report_paths", _unique_strings(self.report_paths, "report paths"))
         object.__setattr__(self, "profile_payload", MappingProxyType(_json_mapping(self.profile_payload, "profile payload")))
+        if self.source_profile_path is not None and not isinstance(self.source_profile_path, str):
+            raise ExportServiceError("source_profile_path must be text or None")
+        for field_name in ("run_id", "assessment_revision_id", "decision_id"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ExportServiceError(f"{field_name} must be non-empty text or None")
+        object.__setattr__(self, "safety_warnings", _unique_strings(self.safety_warnings, "safety warnings"))
+        object.__setattr__(self, "evidence_paths", _unique_strings(self.evidence_paths, "evidence paths"))
+        if self.orca_setup_sha256 is not None and (
+            not isinstance(self.orca_setup_sha256, str)
+            or len(self.orca_setup_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.orca_setup_sha256)
+        ):
+            raise ExportServiceError("orca_setup_sha256 must be a lowercase SHA-256 digest or None")
+        provenance = dict(self.setting_provenance or {})
+        if any(not isinstance(key, str) or not isinstance(value, str) or not value.strip() for key, value in provenance.items()):
+            raise ExportServiceError("setting provenance must map setting names to non-empty profile names")
+        if set(provenance) - set(changes):
+            raise ExportServiceError("setting provenance may only reference changed settings")
+        object.__setattr__(self, "setting_provenance", MappingProxyType(provenance))
 
     @property
     def changed_setting_keys(self) -> tuple[str, ...]:
@@ -384,6 +412,13 @@ class ExportService:
                 raise ExportServiceError("an export cannot overwrite its source profile")
 
     def _source_file_for(self, draft: ExportDraft) -> Path | None:
+        if draft.source_profile_path:
+            if "!" in draft.source_profile_path:
+                return None
+            try:
+                return Path(draft.source_profile_path).expanduser().resolve()
+            except OSError:
+                return None
         try:
             session = self.repository.load(draft.session_id)
         except Exception:
@@ -400,7 +435,10 @@ class ExportService:
 def _manifest(draft: ExportDraft, profile_hash: str, report_hash: str) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "session_id": draft.session_id,
+        "session_id": draft.session_id if draft.run_id is None else None,
+        "run_id": draft.run_id,
+        "assessment_revision_id": draft.assessment_revision_id,
+        "decision_id": draft.decision_id,
         "module_id": draft.module_id,
         "plan_id": draft.plan_id,
         "source_profile": {
@@ -412,10 +450,14 @@ def _manifest(draft: ExportDraft, profile_hash: str, report_hash: str) -> dict[s
         "candidate_ids": list(draft.candidate_ids),
         "supporting_run_ids": list(draft.supporting_run_ids),
         "changes": {key: dict(values) for key, values in draft.setting_changes.items()},
+        "setting_provenance": dict(draft.setting_provenance),
         "confirmation_status": draft.confirmation_status,
         "confirmation_reason": draft.confirmation_reason,
         "orca_version": draft.orca_version,
+        "orca_setup_sha256": draft.orca_setup_sha256,
         "compatibility_warnings": list(draft.compatibility_warnings),
+        "safety_warnings": list(draft.safety_warnings),
+        "evidence_paths": list(draft.evidence_paths),
         "report_paths": list(draft.report_paths),
         "report_sha256": report_hash,
         "evidence_scope": {
@@ -433,29 +475,37 @@ def _report_markdown(draft: ExportDraft) -> str:
     rows = [
         "# Calibration profile export",
         "",
-        f"- Session: `{draft.session_id}`",
+        f"- {'Run' if draft.run_id else 'Session'}: `{draft.run_id or draft.session_id}`",
         f"- Module: `{draft.module_id}`",
         f"- Plan: `{draft.plan_id}`",
         f"- Accepted candidate: `{draft.selected_candidate_id}`",
         f"- Source profile: `{draft.source_profile_name}` (`sha256: {draft.source_profile_sha256}`)",
         f"- New profile: `{draft.new_profile_name}`",
         f"- Confirmation: `{draft.confirmation_status}`",
+        f"- Assessment revision: `{draft.assessment_revision_id or 'legacy session evidence'}`",
+        f"- Decision: `{draft.decision_id or 'legacy session evidence'}`",
+        f"- Orca setup fingerprint: `{draft.orca_setup_sha256 or 'not captured'}`",
         "",
         "## Setting changes",
         "",
-        "| Setting | Source value | Accepted value |",
-        "| --- | --- | --- |",
+        "| Setting | Source value | Accepted value | Effective profile |",
+        "| --- | --- | --- | --- |",
     ]
     for key, values in sorted(draft.setting_changes.items()):
-        rows.append(f"| `{key}` | `{_markdown_value(values['old'])}` | `{_markdown_value(values['new'])}` |")
+        rows.append(f"| `{key}` | `{_markdown_value(values['old'])}` | `{_markdown_value(values['new'])}` | `{_markdown_value(draft.setting_provenance.get(key, 'saved profile'))}` |")
     rows.extend(("", "## Evidence scope", "", "- Candidate IDs: " + ", ".join(f"`{item}`" for item in draft.candidate_ids)))
     rows.append("- Run IDs: " + (", ".join(f"`{item}`" for item in draft.supporting_run_ids) or "none recorded"))
     rows.append("- Recommendation reports: " + (", ".join(f"`{item}`" for item in draft.report_paths) or "none"))
+    if draft.evidence_paths:
+        rows.append("- Saved run evidence: " + ", ".join(f"`{item}`" for item in draft.evidence_paths))
     if draft.confirmation_reason:
         rows.extend(("", "Confirmation opt-out reason: " + draft.confirmation_reason))
     if draft.compatibility_warnings:
         rows.extend(("", "## Compatibility warnings", ""))
         rows.extend(f"- {warning}" for warning in draft.compatibility_warnings)
+    if draft.safety_warnings:
+        rows.extend(("", "## Remaining readiness warnings", ""))
+        rows.extend(f"- {warning}" for warning in draft.safety_warnings)
     rows.extend(("", "## Import instructions", ""))
     if draft.orca_version:
         rows.append(

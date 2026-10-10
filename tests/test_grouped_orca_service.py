@@ -7,9 +7,14 @@ import tempfile
 import zipfile
 import unittest
 
-from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
+from calibrate3dp.app.services.experiment_configuration_service import ExperimentConfigurationService
+from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationError, GroupedOrcaGenerationService
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.app.services.profile_service import ProfileService
+from calibrate3dp.app.services.assessment_service import AssessmentService
+from calibrate3dp.app.services.run_decision_service import RunDecisionService
+from calibrate3dp.domain.assessment import PrintAttestation
+from calibrate3dp.experiments import CandidateAssessment, ExperimentResults
 from calibrate3dp.orca_cli import OrcaCliCapabilities, OrcaSliceResult
 from calibrate3dp.storage.library_store import LibraryRepository
 from calibrate3dp.storage.session_store import SessionRepository
@@ -19,8 +24,10 @@ _OPTIONS = frozenset({"--slice", "--arrange", "--orient", "--outputdir", "--data
 
 
 class FakeGroupedOrca:
-    def __init__(self, *, sample_a_shift_mm: float = 0.0):
+    def __init__(self, *, sample_a_shift_mm: float = 0.0, returncode: int = 0, cancelled: bool = False):
         self.sample_a_shift_mm = sample_a_shift_mm
+        self.returncode = returncode
+        self.cancelled = cancelled
 
     def probe(self, *, timeout_seconds=30):
         return OrcaCliCapabilities(Path("orca-test.exe"), "OrcaSlicer-test", _OPTIONS, 0)
@@ -57,12 +64,12 @@ class FakeGroupedOrca:
             argv=("orca-test.exe", "--slice", str(model_path)),
             started_at=now,
             finished_at=now,
-            returncode=0,
+            returncode=self.returncode,
             timed_out=False,
             stdout="fake stdout\n",
             stderr="one recorded warning\n",
             gcode_files=(path,),
-            cancelled=False,
+            cancelled=self.cancelled,
         )
 
 
@@ -103,6 +110,124 @@ def _create_test_library(root: Path):
 
 
 class GroupedOrcaGenerationServiceTests(unittest.TestCase):
+    def test_linked_one_candidate_confirmation_generates_a_labeled_single_sample_plate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            configurations = ExperimentConfigurationService(library)
+            initial = configurations.prepare_ironing(printer.printer_id, material.material_id).configuration
+            configurations.save(initial)
+            generation = GroupedOrcaGenerationService(library, cli_provider=FakeGroupedOrca)
+            parent = generation.generate_from_configuration(initial.config_id)
+            selected = parent.plan.candidates[4].candidate_id
+            results = ExperimentResults(
+                parent.plan.plan_id,
+                tuple(CandidateAssessment(item.candidate_id, verdict="pass" if item.candidate_id == selected else "fail") for item in parent.plan.candidates),
+                selected_candidate_id=selected,
+            )
+            assessment = AssessmentService(repository).save(
+                parent.run_id, expected_revision=0, results=results,
+                attestation=PrintAttestation(False, False, synthetic=True),
+            )
+            decision = RunDecisionService(repository).evaluate(parent.run_id, assessment.assessment_revision_id)
+            confirmation = RunDecisionService(repository).create_followup(decision.decision_id, kind="confirmation")
+
+            child = generation.generate_from_configuration(confirmation.config_id)
+
+            self.assertEqual(child.status, "settings_validated")
+            self.assertEqual(len(child.plan.candidates), 1)
+            self.assertEqual(len(child.sample_map), 1)
+            self.assertEqual(child.sample_map[0]["label"], "Sample-A")
+            self.assertEqual(child.sample_map[0]["candidate_id"], child.plan.candidates[0].candidate_id)
+            self.assertTrue(child.validation["geometry"]["valid"])
+            self.assertEqual(child.validation["geometry"]["sample_count"], 1)
+            self.assertEqual(child.validation["geometry"]["object_count"], 2)
+            self.assertEqual(repository.get_run_config_link(child.run_id)["relation_type"], "confirmation")
+
+    def test_review_uses_real_layout_without_allocating_a_plate_code(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            configurations = ExperimentConfigurationService(library)
+
+            review = configurations.prepare_ironing(printer.printer_id, material.material_id)
+
+            self.assertEqual(len(review.configuration.plan.candidates), 9)
+            self.assertEqual(
+                [item.candidate_id for item in review.experiment_review.plate_map],
+                [item.candidate_id for item in review.configuration.plan.candidates],
+            )
+            self.assertEqual(
+                [item.specimen_label for item in review.experiment_review.plate_map],
+                [f"Sample-{label}" for label in "ABCDEFGHI"],
+            )
+            self.assertEqual(review.layout.plate_code, "XXXXXX")
+            self.assertEqual(
+                [item.label for item in review.layout.sample_placements], list("ABCDEFGHI")
+            )
+            self.assertEqual(repository.list_runs(), ())
+
+    def test_saved_configuration_generates_and_reopens_the_exact_linked_revision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            configurations = ExperimentConfigurationService(library)
+            generation = GroupedOrcaGenerationService(library, cli_provider=FakeGroupedOrca)
+            review = configurations.prepare_ironing(printer.printer_id, material.material_id)
+            configuration = review.configuration
+            configurations.save(configuration)
+
+            run = generation.generate_from_configuration(configuration.config_id)
+
+            self.assertEqual(run.status, "settings_validated")
+            self.assertEqual(repository.get_configuration_for_run(run.run_id), configuration)
+            self.assertEqual(repository.get_run_config_link(run.run_id)["config_id"], configuration.config_id)
+            self.assertEqual(run.plan.to_dict(), configuration.plan.to_dict())
+            self.assertEqual(run.profiles.to_dict(), configuration.profile_selection.to_dict())
+            geometry_artifact = next(
+                item for item in run.artifacts if item.relative_path.endswith("geometry/geometry.json")
+            )
+            geometry = json.loads(repository.artifact_path(geometry_artifact).read_text(encoding="utf-8"))
+            expected_placements = [
+                {
+                    "label": item.label,
+                    "candidate_id": item.candidate_id,
+                    "row": item.row,
+                    "column": item.column,
+                    "x_mm": item.x_mm,
+                    "y_mm": item.y_mm,
+                    "width_mm": item.width_mm,
+                    "depth_mm": item.depth_mm,
+                    "height_mm": item.height_mm,
+                }
+                for item in review.layout.sample_placements
+            ]
+            self.assertEqual(geometry["sample_placements"], expected_placements)
+
+    def test_changed_source_profile_hash_blocks_generation_before_allocating_a_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            configurations = ExperimentConfigurationService(library)
+            configuration = configurations.prepare_ironing(
+                printer.printer_id, material.material_id
+            ).configuration
+            configurations.save(configuration)
+            process_source = Path(configuration.profile_selection.source_paths["process"])
+            process_source.write_text(
+                json.dumps({
+                    "name": "Test Quality", "type": "process", "ironing_type": "no",
+                    "ironing_flow": "6%", "ironing_speed": "5", "layer_height": "0.2",
+                }),
+                encoding="utf-8",
+            )
+            generation = GroupedOrcaGenerationService(library, cli_provider=FakeGroupedOrca)
+
+            with self.assertRaisesRegex(GroupedOrcaGenerationError, "changed since review"):
+                generation.generate_from_configuration(configuration.config_id)
+
+            self.assertEqual(repository.list_runs(), ())
+
     def test_import_save_generate_and_reopen_grouped_run(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -182,6 +307,36 @@ class GroupedOrcaGenerationServiceTests(unittest.TestCase):
 
             self.assertEqual(run.status, "generation_failed")
             self.assertIn("Select an OrcaSlicer CLI", run.validation["messages"][0])
+            self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
+
+    def test_cancelled_slice_is_saved_as_not_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            service = GroupedOrcaGenerationService(
+                library, cli_provider=lambda: FakeGroupedOrca(cancelled=True)
+            )
+
+            run = service.generate_ironing(printer.printer_id, material.material_id)
+
+            self.assertEqual(run.status, "cancelled")
+            self.assertEqual(run.validation["state"], "cancelled")
+            self.assertFalse(run.validation["print_ready"])
+            self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
+
+    def test_failed_slice_is_saved_as_not_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository, library, printer, material = _create_test_library(root)
+            service = GroupedOrcaGenerationService(
+                library, cli_provider=lambda: FakeGroupedOrca(returncode=2)
+            )
+
+            run = service.generate_ironing(printer.printer_id, material.material_id)
+
+            self.assertEqual(run.status, "generation_failed")
+            self.assertEqual(run.validation["state"], "orca_failed")
+            self.assertFalse(run.validation["print_ready"])
             self.assertEqual(repository.get_run_by_plate_code(run.plate_code).run_id, run.run_id)
 
 

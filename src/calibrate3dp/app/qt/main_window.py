@@ -425,7 +425,7 @@ class MainWindow(QMainWindow):
         new_calibration = NewCalibrationPage()
         new_calibration.open_printer_library.connect(self._open_selected_for_calibration)
         self._add_page(AppPage.NEW_CALIBRATION, new_calibration)
-        self.history_page = RunHistoryPage(library_service)
+        self.history_page = RunHistoryPage(library_service, generation_service=generation_service)
         self._add_page(AppPage.RUNS_HISTORY, self.history_page)
         if settings_service is not None and profile_service is not None and library_service is not None:
             settings_page = OrcaSettingsPage(settings_service, profile_service, library_service)

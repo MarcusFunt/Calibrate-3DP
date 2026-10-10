@@ -37,7 +37,7 @@
 
 The project foundation at origin/main commit `5ef7c4cf04a9b5da84bb570c9276cca98d1427d9` included profile import and inheritance resolution, provenance, candidate JSON generation, deterministic plan and result objects, an ironing planner, one STL per ironing candidate, isolated Orca CLI jobs, manifests and hashes, a SQLite session index, manual result/export screens, and a Dear PyGui shell. Since then, the Qt shell replaced the old launch path; some page adapters remain temporarily for workflow logic and regression coverage.
 
-The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec339305147179397aba4f7`; this implementation pass is isolated in `codex/v1-design-orca-qt`. That baseline includes persistent printer/material/run records, grouped 3MF ironing, real-Orca sample-settings checks, and the Qt profile-to-run/history workflow. This worktree now adds labeled connected specimen geometry and a real-G-code check that the ten object toolpaths preserve one shared plate layout. A generic calibration catalog/compiler, dependency graph, full V1 module set, assessment/refinement/export integration for grouped runs, and complete print-readiness validation remain open. The CLI banner/G-code identity labels map to OrcaSlicer 2.3.0 by the official release's `version.inc`; exact binary/profile/platform support remains unqualified. See `docs/IMPLEMENTATION_STATUS.md` for the implementation inventory.
+The active implementation worktree `codex/v1-design-orca-qt` is based on `origin/main` at `5570dafabb44c9adc77089d2053e194600fc7850` and contains uncommitted next-pass work. The primary checkout `D:\projects\Calibrate-3DP` remains at `4a16ccfa4f84436f8ec339305147179397aba4f7`, one commit behind, with an untracked connected-plate plan document. The committed baseline includes persistent printer/material/run records, grouped 3MF ironing, real-Orca sample-settings checks, the Qt profile-to-run/history workflow, labeled connected specimen geometry, and a real-G-code check that the ten object toolpaths preserve one shared plate layout. This worktree adds versioned frozen configurations, Qt assessment/detail and physical-attestation forms, linked refinement/confirmation records, reviewed process-export gates, and a bounded modal G-code preflight. Sliced A-I labels, the six-character code, and connector paths were inspected from retained Orca output; physical readability and handling remain open. A generic calibration catalog/compiler, dependency graph, full V1 module set, eligible physical assessment/export evidence, and complete print-readiness validation remain open. The CLI banner/G-code identity labels map to OrcaSlicer 2.3.0 by the official release's `version.inc`; exact binary/profile/platform support remains unqualified. See `docs/IMPLEMENTATION_STATUS.md` and `docs/PROGRESS_HISTORY.md` for the implementation inventory and evidence.
 
 ---
 
@@ -58,7 +58,7 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - GeometryBackend: Python adapter that builds a layout from a compiled experiment.
 - OrcaAdapter: separate project/settings application, slicing, and G-code validation boundary.
 
-- [x] For the current printer/material and ironing-run records, use versioned JSON snapshots in SQLite and preserve existing v1 session rows during migration. A general canonical experiment-config schema and portable JSON import/export remain open.
+- [x] Use versioned JSON snapshots in SQLite for printer/material records and a canonical schema-v1 ironing configuration; preserve existing session rows through migrations. Portable configuration JSON import/export remains open.
 - [x] Keep meshes, G-code, and logs in per-run artifact folders and store relative paths, sizes, and SHA-256 values in SQLite. Keep the full current plan and sample map as structured DB data.
 - [x] Build a connected 3 × 3 local geometry prototype with A–I bitmap marks, a six-character code, and repeated breakaway tabs. The measured build123d 0.13.0 environment occupied 721,973,890 bytes in `Lib/site-packages`, so the bounded model uses the standard-library voxel backend; CadQuery was not installed because its declared dependency set is broader and this geometry does not need general BREP operations.
 - [x] Verify local mesh closure, exact bounds, object mappings, keep-outs, connector dimensions, and repeat-generation behavior. Physical mark readability/handling and the broader supported-platform matrix remain open.
@@ -110,8 +110,8 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - Database.migrate() upgrades schema transactionally; repositories expose typed create/get/list/update operations.
 
 - [x] Write a migration test from the existing session schema, including preserved session IDs and payloads.
-- [x] Implement versioned typed printer, material, profile-snapshot, artifact, and calibration-run records. The complete V1 record catalog remains future work.
-- [x] Add the v1→v2 migration, foreign keys, plate-code uniqueness, and transactional run state transitions.
+- [x] Implement versioned typed printer, material, profile-snapshot, artifact, and calibration-run records; schema v3 also persists experiment configurations, assessment revisions, decisions, and exports. The complete V1 record catalog remains future work.
+- [x] Add the v1→v2→v3 migrations, foreign keys, plate-code uniqueness, and transactional run state transitions.
 - [x] Keep large files outside SQLite and record checked relative paths, media types, sizes, and SHA-256 values.
 - [ ] Test interrupted migration rollback, duplicate record IDs, missing artifact files, and recovery messages.
 - [x] Run the full current suite and new storage tests; the 2026-10-10 suite ran 184 tests, with 181 passes and 3 skips. The earlier 2026-10-09 result was 178 ran, 175 passed, and 3 skipped; the count correction is recorded in `docs/PROGRESS_HISTORY.md`.
@@ -236,8 +236,9 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - PlateCompiler.layout(compiled_experiment, printer_geometry) returns one or more PlateLayout values.
 - PlateCompiler.write(layout, output_dir) returns generated artifact records.
 
-- [ ] Generate unique six-character codes using an alphabet without visually ambiguous characters; enforce a database uniqueness check and collision retry.
+- [x] Generate unique six-character codes using an alphabet without visually ambiguous characters; enforce a database uniqueness check and retry codes already in use.
 - [x] Assign short labels deterministically, starting A through I for nine samples; store label-to-candidate mapping in immutable run and geometry records.
+- [x] Review A-I label, six-character code, and connector paths in retained real Orca G-code. The code and labels are visually recognizable in front-face projections; all 72 tab regions have positive extrusion paths in each of four layers. Physical print readability and handling remain open.
 - [ ] Generate a tiny physical code coupon and ensure the code is readable after slicing.
 - [ ] Support grouped flat grids/zones and a distinct tower strategy through the backend selected at preflight design gate. Preserve grouping when the experiment must span multiple physical plates. Preserve grouping when the experiment must span multiple physical plates.
 - [ ] Design connectors to survive accidental plate removal and handling while allowing deliberate separation with a hand tool.
@@ -265,6 +266,8 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - [ ] Check start/end sequences, temperatures, work envelope, required toolpath markers, empty output, and CLI exit status.
 - [ ] Refuse to label output print-ready if any check is unknown, failed, or unsupported.
 - [ ] Store the exact executable identity, CLI arguments, logs, effective profiles, settings hashes, and output hashes in the run manifest.
+
+**Bounded preflight status (2026-10-10):** A separate modal linear G0/G1 subset parser is integrated into the grouped run report. It checks parsed XYZE movement against saved printable polygons/keep-outs and Z limits, temperature targets and blocking waits, records unsupported commands and unverified state, and treats zero setpoints as heater shutdowns. The retained real Orca file was checked across 90,931 movements and remains blocked: G28/M201/M203/M84 are unsupported, some movement precedes explicit G21, bed temperature limits are unavailable, and a 150°C nozzle target is below the saved 190–230°C range. This is a bounded failure report, not completion of this task or a hardware-safety claim; see the dated history entry and retained report path.
 
 ---
 
@@ -337,12 +340,12 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - Modify: storage repositories and Qt pages
 - Create: tests/test_assessment_service.py and tests/test_profile_export.py
 
-- [ ] Save each sample's manual assessment and uncertainty state incrementally.
-- [ ] Show evidence, assumptions, candidate-to-sample map, and dependency state in run detail.
-- [ ] Permit accept, reject, uncertain, tie, and missing-sample outcomes with explicit reasons.
-- [ ] Create follow-up experiments from accepted/rejected manual results without mutating the original plan.
-- [ ] Export a new role-correct Orca profile with a reviewed diff, evidence links, compatibility report, and no source-profile writes.
-- [ ] Test reopening and resuming at each saved workflow stage and code lookup after app restart.
+- [x] Save each sample's manual assessment and uncertainty state in immutable, versioned assessment revisions with expected-revision concurrency checks.
+- [x] Show generation evidence, assumptions, the exact candidate-to-sample map, assessment state, and readiness blockers in Qt run detail.
+- [x] Permit pass/reject, uncertain, tied, missing, and unreviewed outcomes; acceptance policy records reasons and blocks unresolved results.
+- [x] Create linked refinement/confirmation configurations and runs from exact assessment revisions without mutating the parent plan; confirmation requires linked validated generation and physical outcome evidence, and accepted decisions retain the exact child assessment revision ID.
+- [ ] Complete successful reviewed process-profile export from an eligible, physically accepted result. The new-process JSON review/write path and persistence are implemented, but this pass has no physical assessment or successful export artifact; synthetic and unreviewed evidence is rejected.
+- [ ] Test reopening and resuming at each saved workflow stage and code lookup after app restart. Partial coverage now verifies plate-code assessment reopening and saved initial-draft reopening after repository restart; restart coverage at every workflow stage remains open.
 
 ### Task 14: Implement the printer workspace and calibration graph
 
@@ -352,7 +355,7 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 
 - [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration statuses and prerequisites are not yet implemented.
 - [ ] Render the graph from DependencyEvaluator output. The UI does not calculate prerequisite logic itself.
-- [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, and validation. Manual results are not yet attached to this workflow.
+- [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. A dependency graph/state evaluator is not yet implemented.
 - [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
 - [ ] Test calibration status transitions and graph rendering with fake repositories and fake slicer services.
 
@@ -367,7 +370,7 @@ The primary checkout and remote `main` remain at `4a16ccfa4f84436f8ec33930514717
 - [ ] Physically print representative plates for each layout family. Record connector revision, material, handling result, and label/code readability.
 - [ ] Verify source profiles remain unchanged and output exports can be imported into each supported Orca version.
 - [ ] Verify accessibility basics, keyboard navigation, display scaling, native file dialogs, backup, and recovery.
-- [ ] Record exact test commands, outcomes, logs, artifact hashes, assumptions, and deviations in docs/PROGRESS_HISTORY.md.
+- [x] Record exact test commands, outcomes, logs, artifact hashes, assumptions, and deviations in docs/PROGRESS_HISTORY.md.
 - [ ] Mark V1 complete only when every acceptance criterion in docs/V1_GOAL.md has evidence.
 
 ## Suggested verification commands

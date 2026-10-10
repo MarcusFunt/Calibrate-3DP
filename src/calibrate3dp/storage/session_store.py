@@ -20,7 +20,7 @@ from calibrate3dp.app.models import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 SESSION_PAYLOAD_SCHEMA_VERSION = 1
 PROFILE_SELECTION_RELATIVE_PATH = "profiles/profile-selection.json"
 
@@ -380,6 +380,99 @@ class SessionRepository:
                     "ON calibration_runs (printer_id, created_at_utc DESC, run_id ASC)"
                 )
                 connection.execute("PRAGMA user_version = 2")
+                connection.commit()
+                version = 2
+            if version == 2:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """CREATE TABLE experiment_configs (
+                        config_id TEXT PRIMARY KEY,
+                        experiment_id TEXT NOT NULL,
+                        revision_no INTEGER NOT NULL CHECK (revision_no > 0),
+                        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                        created_at_utc TEXT NOT NULL,
+                        input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+                        config_json TEXT NOT NULL,
+                        UNIQUE (experiment_id, revision_no)
+                    )"""
+                )
+                connection.execute(
+                    """CREATE TABLE run_config_links (
+                        run_id TEXT PRIMARY KEY REFERENCES calibration_runs(run_id),
+                        config_id TEXT NOT NULL REFERENCES experiment_configs(config_id),
+                        parent_run_id TEXT REFERENCES calibration_runs(run_id),
+                        parent_assessment_revision_id TEXT,
+                        parent_candidate_id TEXT,
+                        relation_type TEXT NOT NULL CHECK (
+                            relation_type IN ('initial', 'refinement', 'confirmation')
+                        ),
+                        CHECK (
+                            (relation_type = 'initial' AND parent_run_id IS NULL
+                                AND parent_assessment_revision_id IS NULL AND parent_candidate_id IS NULL) OR
+                            (relation_type IN ('refinement', 'confirmation') AND parent_run_id IS NOT NULL
+                                AND parent_assessment_revision_id IS NOT NULL AND parent_candidate_id IS NOT NULL)
+                        ),
+                        FOREIGN KEY (parent_run_id, parent_assessment_revision_id)
+                            REFERENCES run_assessment_revisions(run_id, assessment_revision_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX experiment_configs_revision_idx "
+                    "ON experiment_configs (experiment_id, revision_no DESC)"
+                )
+                connection.execute(
+                    """CREATE TABLE run_assessment_revisions (
+                        assessment_revision_id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL REFERENCES calibration_runs(run_id),
+                        revision_no INTEGER NOT NULL CHECK (revision_no > 0),
+                        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                        created_at_utc TEXT NOT NULL,
+                        assessment_json TEXT NOT NULL,
+                        print_attestation_json TEXT NOT NULL,
+                        assessment_sha256 TEXT NOT NULL CHECK (length(assessment_sha256) = 64),
+                        UNIQUE (run_id, revision_no),
+                        UNIQUE (run_id, assessment_revision_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX run_assessment_revision_idx "
+                    "ON run_assessment_revisions (run_id, revision_no DESC)"
+                )
+                connection.execute(
+                    """CREATE TABLE run_decisions (
+                        decision_id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL REFERENCES calibration_runs(run_id),
+                        assessment_revision_id TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        decision_json TEXT NOT NULL,
+                        FOREIGN KEY (run_id, assessment_revision_id)
+                            REFERENCES run_assessment_revisions(run_id, assessment_revision_id),
+                        UNIQUE (run_id, assessment_revision_id, decision_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX run_decisions_revision_idx "
+                    "ON run_decisions (assessment_revision_id, created_at_utc)"
+                )
+                connection.execute(
+                    """CREATE TABLE run_exports (
+                        export_id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL REFERENCES calibration_runs(run_id),
+                        assessment_revision_id TEXT NOT NULL,
+                        decision_id TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        export_json TEXT NOT NULL,
+                        export_sha256 TEXT NOT NULL CHECK (length(export_sha256) = 64),
+                        FOREIGN KEY (run_id, assessment_revision_id)
+                            REFERENCES run_assessment_revisions(run_id, assessment_revision_id),
+                        FOREIGN KEY (run_id, assessment_revision_id, decision_id)
+                            REFERENCES run_decisions(run_id, assessment_revision_id, decision_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX run_exports_run_idx ON run_exports (run_id, created_at_utc DESC)"
+                )
+                connection.execute("PRAGMA user_version = 3")
                 connection.commit()
         except Exception:
             connection.rollback()

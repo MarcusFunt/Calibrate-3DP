@@ -75,7 +75,10 @@ class ExperimentReviewServiceTests(unittest.TestCase):
         self.assertEqual(review.fixed_settings["ironing_type"], "top")
         self.assertEqual(review.fixed_settings["top_surface_pattern"], "monotonic")
         self.assertEqual(len(review.plate_map), 9)
-        self.assertEqual(review.plate_map[0].plate_label, "Separate plate I001")
+        self.assertEqual(review.plate_map[0].plate_label, "Connected plate (code assigned at generation)")
+        self.assertEqual(review.plate_map[0].specimen_label, "Sample-A")
+        self.assertEqual(review.plate_map[-1].specimen_label, "Sample-I")
+        self.assertTrue(any("share one connected plate" in item for item in review.assumptions))
         self.assertIn("not available", review.estimate_message.casefold())
 
     def test_unavailable_module_cannot_start(self):

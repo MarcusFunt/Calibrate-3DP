@@ -165,7 +165,7 @@ class ExperimentService:
             raise ExperimentServiceError(f"candidate matrix is invalid: {exc}") from exc
 
     def review(self, plan: ExperimentPlan, profiles: ProfileSelection) -> ExperimentReview:
-        """Describe fixed inputs, independent plates, and known assumptions."""
+        """Describe the fixed inputs and grouped A-I plate mapping."""
         if not isinstance(plan, ExperimentPlan) or plan.module_id != "ironing":
             raise ExperimentServiceError("review requires an ironing ExperimentPlan")
         if not isinstance(profiles, ProfileSelection):
@@ -178,15 +178,18 @@ class ExperimentService:
             for key, value in plan.baseline_settings.items()
             if key not in SWEEP_KEYS and key not in {"name", "type", "inherits"}
         }
+        if not 1 <= len(plan.candidates) <= 9:
+            raise ExperimentServiceError("grouped ironing review supports one to nine candidates")
+        labels = "ABCDEFGHI"[:len(plan.candidates)]
         plate_map = tuple(
             CandidatePlateEntry(
                 candidate_id=candidate.candidate_id,
                 flow_value=candidate.overrides[FLOW_KEY],
                 speed_value=candidate.overrides[SPEED_KEY],
-                plate_label=f"Separate plate {candidate.candidate_id}",
-                specimen_label=candidate.candidate_id,
+                plate_label="Connected plate (code assigned at generation)",
+                specimen_label=f"Sample-{label}",
             )
-            for candidate in plan.candidates
+            for label, candidate in zip(labels, plan.candidates, strict=True)
         )
 
         warnings = list(profiles.compatibility_warnings)
@@ -204,7 +207,8 @@ class ExperimentService:
             assumptions=(
                 "The default grid uses three flow values by three speed values around the imported baseline.",
                 "Every other imported process setting remains fixed at its resolved baseline value.",
-                "One candidate is assigned to each separate plate because 3MF per-object overrides are unverified.",
+                f"All {len(plan.candidates)} candidate(s) share one connected plate; each sample has its own validated object settings.",
+                "The six-character plate code is allocated only when a run is generated.",
             ),
             warnings=tuple(warnings),
             estimate_message="Duration and material estimates are not available for this Orca profile set.",

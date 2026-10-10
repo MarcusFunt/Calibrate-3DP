@@ -6,8 +6,11 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from calibrate3dp.app.services.experiment_service import ExperimentService
+from calibrate3dp.app.services.experiment_configuration_service import ExperimentConfigurationService
+from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
 from calibrate3dp.app.services.library_service import LibraryService
 from calibrate3dp.app.services.profile_service import ProfileService
 from calibrate3dp.app.qt.view_models import PrinterSummary
@@ -35,28 +38,35 @@ class SavedPrinterLibrary:
 class SavingFakeGeneration:
     def __init__(self, library: LibraryService) -> None:
         self.library = library
+        self.configurations = ExperimentConfigurationService(library)
 
-    def generate_ironing(self, printer_id: str, material_id: str, *, cancel_event=None):
+    def prepare_ironing_configuration(self, printer_id: str, material_id: str):
+        return self.configurations.prepare_ironing(printer_id, material_id)
+
+    def save_configuration(self, configuration):
+        return self.configurations.save(configuration)
+
+    def generate_from_configuration(self, config_id: str, *, cancel_event=None):
         repository = self.library.repository
-        selection = self.library.resolve_selection(printer_id, material_id)
-        plan = ExperimentService().create_initial("ironing", selection)
+        configuration = repository.get_configuration(config_id)
+        plan = configuration.plan
         code = repository.allocate_plate_code()
         run = CalibrationRunRecord(
             run_id="qt-workflow-run",
             plate_code=code,
-            printer_id=printer_id,
-            material_id=material_id,
+            printer_id=configuration.printer_id,
+            material_id=configuration.material_id,
             status="generating",
             created_at_utc=utc_now(),
             plan=plan,
-            profiles=selection,
+            profiles=configuration.profile_selection,
             sample_map=tuple(
                 {"label": f"Sample-{label}", "candidate_id": candidate.candidate_id, "settings": dict(candidate.overrides)}
-                for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=False)
+                for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
             ),
             validation={"state": "pending", "print_ready": False},
         )
-        repository.create_run(run)
+        repository.create_run(run, configuration_id=configuration.config_id)
         return repository.finalize_run(
             run.run_id, status="settings_validated", artifacts=(),
             validation={
@@ -71,6 +81,11 @@ class SavingFakeGeneration:
                 ],
             },
         )
+
+    def generate_ironing(self, printer_id: str, material_id: str, *, cancel_event=None):
+        configuration = self.configurations.prepare_ironing(printer_id, material_id).configuration
+        self.configurations.save(configuration)
+        return self.generate_from_configuration(configuration.config_id, cancel_event=cancel_event)
 
 
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "PySide6 GUI extra is not installed")
@@ -141,6 +156,12 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         completed = QEventLoop()
         window.workspace_page.run_finished.connect(completed.quit)
         QTimer.singleShot(5000, completed.quit)
+        def accept_review():
+            dialog = window.workspace_page.review_dialog
+            self.assertIsNotNone(dialog)
+            dialog._save_configuration()
+            dialog._generate_saved_configuration()
+        QTimer.singleShot(0, accept_review)
         window.workspace_page.generate_button.click()
         completed.exec()
         self.assertIn("Print-ready: no", window.workspace_page.state.text())
@@ -154,11 +175,109 @@ class QtPrinterWorkflowTests(unittest.TestCase):
         run = self.repository.list_runs()[0]
         window.navigate_to(AppPage.RUNS_HISTORY)
         window.history_page.code_entry.setText(run.plate_code.lower())
-        window.history_page._lookup()
+        from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
+        opened_details = []
+        with patch.object(ExperimentDetailsDialog, "exec", lambda dialog: opened_details.append(dialog) or dialog.DialogCode.Rejected):
+            window.history_page._lookup()
         self.assertIn(f"Plate {run.plate_code}", window.history_page.lookup_result.toPlainText())
         self.assertIn("Sample-A", window.history_page.lookup_result.toPlainText())
         self.assertIn("Remaining print-readiness checks", window.history_page.lookup_result.toPlainText())
         self.assertIn("Start/end code and temperature commands have not been validated.", window.history_page.lookup_result.toPlainText())
+        self.assertEqual(len(opened_details), 1)
+        self.assertEqual(opened_details[0].run.run_id, run.run_id)
+
+    def test_configuration_dialog_previews_and_saves_the_reviewed_candidate_map(self) -> None:
+        from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
+        from calibrate3dp.app.qt.workflow_widgets import AddMaterialDialog, AddPrinterDialog
+
+        printer_dialog = AddPrinterDialog(self.library)
+        printer_dialog.display_name.setText("Review printer")
+        printer_dialog.model.setText("Test 3D Printer")
+        printer_dialog.nozzle.setText("0.4 mm")
+        printer_dialog._save()
+        printer = printer_dialog.record
+        material_dialog = AddMaterialDialog(self.library, printer)
+        material_dialog.display_name.setText("Review PLA")
+        material_dialog._save()
+        material = material_dialog.record
+        generation = GroupedOrcaGenerationService(self.library, cli_provider=lambda: None)
+        review = generation.prepare_ironing_configuration(printer.printer_id, material.material_id)
+        dialog = ExperimentConfigurationDialog(review, generation)
+
+        self.assertEqual(dialog.candidate_table.rowCount(), 9)
+        self.assertEqual(dialog.layout_preview.plate_layout.sample_placements, review.layout.sample_placements)
+        self.assertIn("allocated at generation", dialog.code_status.text().lower())
+        dialog.flow_values.setText("7%, 10%, 13%")
+        dialog._refresh_preview()
+        self.assertEqual(dialog.candidate_table.item(0, 1).text(), "7%")
+        dialog._save_configuration()
+
+        self.assertIsNotNone(dialog.configuration)
+        self.assertEqual(
+            self.repository.get_configuration(dialog.configuration.config_id),
+            dialog.configuration,
+        )
+        self.assertEqual(self.repository.list_runs(), ())
+
+        dialog.flow_values.setText("8%, 11%, 14%")
+        self.assertTrue(dialog.save_button.isEnabled())
+        self.assertFalse(dialog.generate_button.isEnabled())
+        dialog._save_configuration()
+        saved_flow = next(
+            item.values for item in dialog.configuration.plan.dimensions
+            if item.key == "ironing_flow"
+        )
+        self.assertEqual(saved_flow, ("8%", "11%", "14%"))
+        self.assertEqual(dialog.configuration.revision_no, 2)
+
+    def test_saved_configuration_draft_can_be_reopened_after_repository_restart(self) -> None:
+        from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
+        from calibrate3dp.app.qt.main_window import MainWindow
+        from calibrate3dp.app.qt.workflow_widgets import AddMaterialDialog, AddPrinterDialog
+
+        printer_dialog = AddPrinterDialog(self.library)
+        printer_dialog.display_name.setText("Resume printer")
+        printer_dialog.model.setText("Test 3D Printer")
+        printer_dialog.nozzle.setText("0.4 mm")
+        printer_dialog._save()
+        printer = printer_dialog.record
+        material_dialog = AddMaterialDialog(self.library, printer)
+        material_dialog.display_name.setText("Resume PLA")
+        material_dialog._save()
+        material = material_dialog.record
+        saved = ExperimentConfigurationService(self.library).prepare_ironing(
+            printer.printer_id, material.material_id
+        ).configuration
+        saved = ExperimentConfigurationService(self.library).save(saved)
+
+        # Simulate a fresh application process with new repository/service objects.
+        repository = LibraryRepository(SessionRepository(Path(self.temp.name) / "workspace"))
+        library = LibraryService(repository, self.profile_service)
+        window = MainWindow(
+            SavedPrinterLibrary(library),
+            library_service=library,
+            generation_service=SavingFakeGeneration(library),
+        )
+        self.addCleanup(window.close)
+        window.library_page.rows[printer.printer_id].click()
+        window.library_page.open_button.click()
+        workspace = window.workspace_page
+        self.assertEqual(workspace.saved_configuration_choice.count(), 1)
+
+        started: list[str] = []
+        workspace._start_run_generation = started.append
+        opened: list[object] = []
+
+        def accept_saved_draft(dialog):
+            opened.append(dialog._saved_configuration)
+            dialog._generate_saved_configuration()
+            return dialog.DialogCode.Accepted
+
+        with patch.object(ExperimentConfigurationDialog, "exec", accept_saved_draft):
+            workspace.open_configuration_button.click()
+
+        self.assertEqual(opened, [saved])
+        self.assertEqual(started, [saved.config_id])
 
 
 if __name__ == "__main__":

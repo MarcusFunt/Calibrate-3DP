@@ -7,8 +7,16 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from calibrate3dp.app.models import ProfileSelection
+from calibrate3dp.app.services.experiment_service import ExperimentService
+from calibrate3dp.app.services.library_service import LibraryService
+from calibrate3dp.app.services.profile_service import ProfileService
+from calibrate3dp.domain.experiment_config import (
+    SavedExperimentConfiguration,
+    default_layout_options,
+)
 from calibrate3dp.domain.records import (
     ArtifactRecord,
     CalibrationRunRecord,
@@ -22,6 +30,7 @@ from calibrate3dp.storage.library_store import (
     DuplicatePlateCodeError,
     LibraryRepository,
     RunStateError,
+    MissingRunArtifactError,
 )
 from calibrate3dp.storage.session_store import SessionRepository
 
@@ -76,6 +85,17 @@ class ProfileSnapshotTests(unittest.TestCase):
 
 
 class LibraryRepositoryTests(unittest.TestCase):
+    @patch("calibrate3dp.storage.library_store.secrets.choice", side_effect=list("7K3P9D234567"))
+    def test_allocate_plate_code_retries_an_existing_code(self, _choice):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = LibraryRepository(SessionRepository(Path(temp)))
+            printer, material, run = _records(Path(temp))
+            repository.add_printer(printer)
+            repository.add_material(material)
+            repository.create_run(run)
+
+            self.assertEqual(repository.allocate_plate_code(), "234567")
+
     def test_migrates_session_schema_and_preserves_existing_session_rows(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -101,11 +121,68 @@ class LibraryRepositoryTests(unittest.TestCase):
             sessions = SessionRepository(root)
             LibraryRepository(sessions)
             connection = sqlite3.connect(db_path)
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
             self.assertEqual(connection.execute("SELECT session_id, payload_json FROM sessions").fetchone(), ("legacy-session", '{"schema_version":1}'))
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             connection.close()
-            self.assertTrue({"printers", "materials", "calibration_runs"} <= tables)
+            self.assertEqual(version, 3)
+            self.assertTrue({
+                "printers", "materials", "calibration_runs", "experiment_configs",
+                "run_config_links", "run_assessment_revisions", "run_decisions", "run_exports",
+            } <= tables)
+
+    def test_v2_migration_preserves_populated_printer_material_and_run_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = LibraryRepository(SessionRepository(root))
+            printer, material, run = _records(root)
+            repository.add_printer(printer)
+            repository.add_material(material)
+            repository.create_run(run)
+            connection = sqlite3.connect(root / "sessions.sqlite3")
+            connection.execute("PRAGMA foreign_keys = OFF")
+            for table in (
+                "run_exports", "run_decisions", "run_assessment_revisions",
+                "run_config_links", "experiment_configs",
+            ):
+                connection.execute(f"DROP TABLE {table}")
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+            connection.close()
+
+            migrated = LibraryRepository(SessionRepository(root))
+            self.assertEqual(migrated.get_printer(printer.printer_id), printer)
+            self.assertEqual(migrated.get_material(material.material_id), material)
+            self.assertEqual(migrated.get_run(run.run_id), run)
+
+    def test_schema_v3_migration_rolls_back_all_new_tables_on_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sessions = SessionRepository(root)
+            connection = sqlite3.connect(root / "sessions.sqlite3")
+            connection.execute("PRAGMA foreign_keys = OFF")
+            for table in (
+                "run_exports", "run_decisions", "run_assessment_revisions",
+                "run_config_links", "experiment_configs",
+            ):
+                connection.execute(f"DROP TABLE {table}")
+            connection.execute("PRAGMA user_version = 2")
+            connection.execute("CREATE TABLE run_exports (conflicting_schema INTEGER)")
+            connection.commit()
+            connection.close()
+
+            with self.assertRaises(sqlite3.OperationalError):
+                SessionRepository(root)
+
+            connection = sqlite3.connect(root / "sessions.sqlite3")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            connection.close()
+            self.assertEqual(version, 2)
+            self.assertTrue(tables.isdisjoint({
+                "experiment_configs", "run_config_links", "run_assessment_revisions", "run_decisions",
+            }))
+            self.assertTrue(sessions.database_path.exists())
 
     def test_printers_materials_runs_and_plate_code_lookup_persist(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -147,6 +224,146 @@ class LibraryRepositoryTests(unittest.TestCase):
             self.assertEqual(finalized.plan.to_dict(), run.plan.to_dict())
             with self.assertRaises(RunStateError):
                 repository.finalize_run(run.run_id, status="validation_failed", artifacts=(), validation={})
+
+    def test_configuration_revision_and_run_link_roundtrip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = LibraryRepository(SessionRepository(root))
+            printer, material, _run = _records(root)
+            repository.add_printer(printer)
+            repository.add_material(material)
+            selection = repository.get_printer(printer.printer_id)
+            profile_selection = ProfileSelection(
+                printer=selection.machine_profile.profile,
+                process=selection.process_profile.profile,
+                filament=material.filament_profile.profile,
+                source_paths={
+                    "printer": "printer.json", "process": "process.json", "filament": "filament.json",
+                },
+                source_hashes={"printer": "a" * 64, "process": "b" * 64, "filament": "c" * 64},
+            )
+            plan = ExperimentService().create_initial("ironing", profile_selection)
+            configuration = SavedExperimentConfiguration(
+                "config-1", "experiment-1", 1, printer.printer_id, material.material_id,
+                profile_selection, plan, default_layout_options(), "2026-10-10T12:00:00Z",
+            )
+            repository.save_configuration(configuration)
+
+            run = CalibrationRunRecord(
+                "linked-run", "8K3P9D", printer.printer_id, material.material_id,
+                "generating", "2026-10-10T12:01:00Z", plan, profile_selection,
+                tuple({
+                    "label": f"Sample-{label}", "candidate_id": candidate.candidate_id,
+                    "settings": dict(candidate.overrides),
+                } for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)),
+                {"state": "pending", "print_ready": False},
+            )
+            repository.create_run(run, configuration_id=configuration.config_id)
+
+            self.assertEqual(repository.get_configuration(configuration.config_id), configuration)
+            self.assertEqual(repository.get_configuration_for_run(run.run_id), configuration)
+            with self.assertRaises(Exception):
+                repository.save_configuration(configuration)
+
+    def test_missing_or_corrupt_finalized_artifact_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = LibraryRepository(SessionRepository(root))
+            printer, material, run = _records(root)
+            repository.add_printer(printer)
+            repository.add_material(material)
+            repository.create_run(run)
+
+            artifact_path = root / "runs" / run.run_id / "manifest.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text("original evidence\n", encoding="utf-8")
+            original = artifact_path.read_bytes()
+            artifact = ArtifactRecord(
+                "runs/run-1/manifest.json", "application/json", len(original),
+                hashlib.sha256(original).hexdigest(),
+            )
+            repository.finalize_run(
+                run.run_id, status="settings_validated", artifacts=(artifact,), validation={}
+            )
+
+            artifact_path.unlink()
+            with self.assertRaisesRegex(MissingRunArtifactError, "missing"):
+                repository.artifact_path(artifact)
+
+            artifact_path.write_text("changed evidence\n", encoding="utf-8")
+            with self.assertRaisesRegex(MissingRunArtifactError, "hash does not match"):
+                repository.artifact_path(artifact)
+
+
+class LibraryServiceFreshnessTests(unittest.TestCase):
+    def test_manual_import_and_inherited_sources_are_rechecked_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manual = root / "outside-orca-config"
+            manual.mkdir()
+            profile_root = root / "empty-orca-config"
+            machine_path = manual / "machine.json"
+            base_process_path = manual / "base-process.json"
+            process_path = manual / "process.json"
+            filament_path = manual / "filament.json"
+            machine_path.write_text(json.dumps({
+                "name": "Manual machine", "type": "machine", "nozzle_diameter": ["0.4"],
+            }), encoding="utf-8")
+            base_process_path.write_text(json.dumps({
+                "name": "Manual base process", "type": "process",
+                "ironing_flow": "5%", "ironing_speed": "5",
+            }), encoding="utf-8")
+            process_path.write_text(json.dumps({
+                "name": "Manual process", "type": "process",
+                "inherits": "Manual base process", "ironing_type": "top",
+            }), encoding="utf-8")
+            filament_path.write_text(json.dumps({
+                "name": "Manual PLA", "type": "filament", "filament_type": ["PLA"],
+            }), encoding="utf-8")
+
+            profile_service = ProfileService(config_roots=(profile_root,))
+            for path in (machine_path, base_process_path, process_path, filament_path):
+                profile_service.import_source(path)
+            repository = LibraryRepository(SessionRepository(root / "workspace"))
+            library = LibraryService(repository, profile_service)
+            printer = library.add_printer(
+                display_name="Manual printer", model="Manual model", nozzle="0.4 mm",
+                machine_choice=profile_service.choices("printer")[0],
+                process_choice=next(item for item in profile_service.choices("process") if item.name == "Manual process"),
+            )
+            material = library.add_material(
+                display_name="Manual PLA", nozzle_context="0.4 mm",
+                filament_choice=profile_service.choices("filament")[0],
+            )
+            selection = library.resolve_selection(printer.printer_id, material.material_id)
+
+            # Manual imports are intentionally outside the configured Orca tree.
+            restarted_library = LibraryService(
+                LibraryRepository(SessionRepository(root / "workspace")),
+                ProfileService(config_roots=(profile_root,)),
+            )
+            self.assertEqual(
+                restarted_library.current_source_hashes(selection),
+                dict(selection.source_hashes),
+            )
+
+            base_process_path.write_text(json.dumps({
+                "name": "Manual base process", "type": "process",
+                "ironing_flow": "7%", "ironing_speed": "5",
+            }), encoding="utf-8")
+            changed_parent = restarted_library.current_source_hashes(selection)
+            self.assertIsNone(changed_parent["process"])
+
+            process_path.write_text(json.dumps({
+                "name": "Manual process", "type": "process",
+                "inherits": "Manual base process", "ironing_type": "top", "notes": "changed",
+            }), encoding="utf-8")
+            changed_leaf = restarted_library.current_source_hashes(selection)
+            self.assertNotEqual(changed_leaf["process"], selection.source_hashes["process"])
+
+            process_path.unlink()
+            missing_leaf = restarted_library.current_source_hashes(selection)
+            self.assertIsNone(missing_leaf["process"])
 
 
 if __name__ == "__main__":

@@ -228,6 +228,8 @@ class CalibrationRunRecord:
 
     def __post_init__(self) -> None:
         _non_empty(self.run_id, "run_id")
+        if any(character in self.run_id for character in ("/", "\\", ":")) or self.run_id in {".", ".."}:
+            raise RecordValidationError("run_id must be a safe path component")
         if not isinstance(self.plate_code, str) or not re.fullmatch(r"[A-Z0-9]{6}", self.plate_code):
             raise RecordValidationError("plate_code must contain exactly six uppercase letters or digits")
         _non_empty(self.printer_id, "printer_id")

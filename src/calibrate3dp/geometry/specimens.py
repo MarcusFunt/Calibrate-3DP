@@ -233,14 +233,16 @@ class PlateGeometryBackend:
             messages.append("geometry backend identity is unsupported")
         sample_objects = [obj for obj in geometry.objects if obj.sample_label is not None]
         labels = tuple(obj.sample_label for obj in sample_objects)
-        if labels != tuple("ABCDEFGHI"):
-            messages.append("geometry must preserve nine ordered sample objects A through I")
-        expected_names = tuple(f"Sample-{label}" for label in "ABCDEFGHI") + ("Plate-Frame",)
+        expected_labels = tuple("ABCDEFGHI"[:len(sample_objects)])
+        if not 1 <= len(sample_objects) <= 9 or labels != expected_labels:
+            messages.append("geometry must preserve one to nine ordered sample objects starting at A")
+        expected_names = tuple(f"Sample-{label}" for label in expected_labels) + ("Plate-Frame",)
         if tuple(obj.name for obj in geometry.objects) != expected_names:
-            messages.append("geometry object names and ordering do not match the nine samples and shared frame")
-        if tuple(item.label for item in geometry.layout.sample_placements) != tuple("ABCDEFGHI"):
-            messages.append("layout must preserve nine ordered sample placements A through I")
-        if len({obj.candidate_id for obj in sample_objects}) != 9:
+            messages.append("geometry object names and ordering do not match the samples and shared frame")
+        placement_labels = tuple(item.label for item in geometry.layout.sample_placements)
+        if placement_labels != expected_labels:
+            messages.append("layout must preserve the ordered sample placements")
+        if len({obj.candidate_id for obj in sample_objects}) != len(sample_objects):
             messages.append("sample object candidate mapping is missing or ambiguous")
         placements = {item.label: item for item in geometry.layout.sample_placements}
         samples_by_label = {obj.sample_label: obj for obj in sample_objects}
@@ -265,15 +267,15 @@ class PlateGeometryBackend:
                 target_name="Plate-Frame",
                 contact_area_mm2=sum(item.contact_area_mm2 for item in geometry.layout.connectors if item.sample_label == label),
             )
-            for label in "ABCDEFGHI"
+            for label in expected_labels
         )
         if geometry.connections != expected_connections or any(
             not math.isfinite(item.contact_area_mm2) or item.contact_area_mm2 < 1.0
             for item in geometry.connections
         ):
             messages.append("sample-to-frame breakaway connections are invalid")
-        if tuple(item.label for item in geometry.layout.sample_placements) == tuple("ABCDEFGHI"):
-            for label in "ABCDEFGHI":
+        if placement_labels == expected_labels:
+            for label in expected_labels:
                 sample = samples_by_label.get(label)
                 placement = placements[label]
                 if sample is None:
