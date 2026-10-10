@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QPushButton, QHBoxLayout, QWidget
 
 
 class AppPage(str, Enum):
@@ -26,29 +26,21 @@ PAGE_LABELS: dict[AppPage, str] = {
 
 
 class NavigationRail(QFrame):
-    """A compact set of checkable destinations with stable keyboard focus."""
+    """A compact horizontal set of checkable destinations with stable keyboard focus."""
 
     page_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("navigationRail")
-        self.setMinimumWidth(194)
-        self.setMaximumWidth(220)
+        self.setMinimumHeight(54)
+        self.setMaximumHeight(66)
         self.buttons: dict[AppPage, QPushButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 24, 18, 18)
-        layout.setSpacing(7)
-
-        brand = QLabel("Calibrate-3DP")
-        brand.setObjectName("brandName")
-        caption = QLabel("FDM PRINTER CALIBRATION")
-        caption.setObjectName("brandCaption")
-        layout.addWidget(brand)
-        layout.addWidget(caption)
-        layout.addSpacing(28)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 8, 24, 8)
+        layout.setSpacing(8)
 
         for page, label in PAGE_LABELS.items():
             button = QPushButton(label)
@@ -60,11 +52,7 @@ class NavigationRail(QFrame):
             group.addButton(button)
             self.buttons[page] = button
             layout.addWidget(button)
-
         layout.addStretch(1)
-        context = QLabel("LOCAL WORKSPACE")
-        context.setObjectName("eyebrow")
-        layout.addWidget(context)
 
     def set_current_page(self, page: AppPage) -> None:
         self.buttons[page].setChecked(True)

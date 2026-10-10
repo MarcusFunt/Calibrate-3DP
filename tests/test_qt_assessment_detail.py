@@ -75,6 +75,16 @@ class QtExperimentDetailsTests(unittest.TestCase):
                 validation={"state": "sample_settings_validated", "print_ready": False},
             )
             dialog = ExperimentDetailsDialog(LibraryService(repository, ProfileService()), run.run_id)
+            self.assertEqual(
+                [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())],
+                ["Inspect", "Assess", "Decision", "Export"],
+            )
+            self.assertIs(dialog.validation.parentWidget(), dialog.inspect_tab)
+            self.assertIs(dialog.scroll.parentWidget(), dialog.assess_tab)
+            self.assertIs(dialog.decision_group.parentWidget(), dialog.decision_tab)
+            self.assertIs(dialog.export_button.parentWidget(), dialog.export_tab)
+            self.assertIn("physical", dialog.export_gate_message.text().lower())
+            self.assertIn("locked", dialog.export_gate_message.text().lower())
 
             with patch("calibrate3dp.app.qt.experiment_detail.QDesktopServices.openUrl", return_value=True) as open_url:
                 dialog._open_selected_artifact()
@@ -141,6 +151,7 @@ class QtExperimentDetailsTests(unittest.TestCase):
             self.assertFalse(dialog.confirmation_button.isEnabled())
             self.assertFalse(dialog.export_button.isEnabled())
             self.assertIn("Save them before requesting a recommendation", dialog.decision_summary.text())
+            self.assertIn("unsaved", dialog.export_gate_message.text().lower())
 
     def test_details_reopens_by_plate_code_across_repository_restart(self):
         with tempfile.TemporaryDirectory() as temporary:

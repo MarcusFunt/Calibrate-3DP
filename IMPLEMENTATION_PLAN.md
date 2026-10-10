@@ -345,6 +345,7 @@ The current primary checkout is `D:\projects\Calibrate-3DP` at HEAD `3c3ac2c`; c
 
 - [x] Save each sample's manual assessment and uncertainty state in immutable, versioned assessment revisions with expected-revision concurrency checks.
 - [x] Show generation evidence, assumptions, the exact candidate-to-sample map, assessment state, and readiness blockers in Qt run detail.
+- [x] Group run details into Inspect, Assess, Decision, and Export tabs, with a live explanation of export eligibility and next steps.
 - [x] Permit pass/reject, uncertain, tied, missing, and unreviewed outcomes; acceptance policy records reasons and blocks unresolved results.
 - [x] Create linked refinement/confirmation configurations and runs from exact assessment revisions without mutating the parent plan; confirmation requires linked validated generation and physical outcome evidence, and accepted decisions retain the exact child assessment revision ID.
 - [ ] Complete successful reviewed process-profile export from an eligible, physically accepted result. The new-process JSON review/write path and persistence are implemented, but this pass has no physical assessment or successful export artifact; synthetic and unreviewed evidence is rejected.
@@ -359,6 +360,7 @@ The current primary checkout is `D:\projects\Calibrate-3DP` at HEAD `3c3ac2c`; c
 - [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration status is available only for ironing flow × speed; other families are not exposed as graph nodes.
 - [x] Render the available workflow status and reasons from DependencyEvaluator output. The UI does not calculate prerequisite logic itself; a full graph across all calibration families remains open.
 - [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. The workspace now also presents the service-evaluated calibration state.
+- [x] Add a global printer/material context header and plate lookup; group workspace content into Overview, Experiments, and Printer and materials tabs, with text-and-icon workflow states and higher-contrast controls.
 - [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
 - [x] Test calibration status transitions and available workflow rendering with offscreen Qt tests using a fake state service/repository and existing Orca setup fixtures.
 

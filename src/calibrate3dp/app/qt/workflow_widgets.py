@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -289,8 +291,8 @@ class PrinterWorkspacePage(QWidget):
         self._task: _RunTask | None = None
         self.review_dialog: ExperimentConfigurationDialog | None = None
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 36, 40, 36)
-        layout.setSpacing(13)
+        layout.setContentsMargins(36, 24, 36, 28)
+        layout.setSpacing(8)
         self.heading = QLabel("Printer Workspace")
         self.heading.setObjectName("pageTitle")
         self.printer_context = QLabel("No printer is selected.")
@@ -299,30 +301,21 @@ class PrinterWorkspacePage(QWidget):
         layout.addWidget(self.heading)
         layout.addWidget(self.printer_context)
 
-        material_row = QHBoxLayout()
-        material_row.addWidget(QLabel("Material"))
-        self.material_choice = QComboBox()
-        self.material_choice.setAccessibleName("Select a saved material")
-        material_row.addWidget(self.material_choice, 1)
-        self.add_material_button = QPushButton("Add material…")
-        self.add_material_button.setObjectName("secondaryAction")
-        self.add_material_button.clicked.connect(self._request_add_material)
-        material_row.addWidget(self.add_material_button)
-        layout.addLayout(material_row)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("workspaceTabs")
+        self.overview_tab = QWidget()
+        self.experiments_tab = QWidget()
+        self.printer_materials_tab = QWidget()
+        self.tabs.addTab(self.overview_tab, "Overview")
+        self.tabs.addTab(self.experiments_tab, "Experiments")
+        self.tabs.addTab(self.printer_materials_tab, "Printer and materials")
+        layout.addWidget(self.tabs, 1)
 
-        saved_configuration_row = QHBoxLayout()
-        saved_configuration_row.addWidget(QLabel("Saved ironing draft"))
-        self.saved_configuration_choice = QComboBox()
-        self.saved_configuration_choice.setAccessibleName("Open a saved ironing configuration draft")
-        self.saved_configuration_choice.currentIndexChanged.connect(self._sync_saved_configuration_controls)
-        saved_configuration_row.addWidget(self.saved_configuration_choice, 1)
-        self.open_configuration_button = QPushButton("Open draft…")
-        self.open_configuration_button.setObjectName("secondaryAction")
-        self.open_configuration_button.clicked.connect(self._open_saved_configuration)
-        saved_configuration_row.addWidget(self.open_configuration_button)
-        layout.addLayout(saved_configuration_row)
-        self.material_choice.currentIndexChanged.connect(self._refresh_saved_configurations)
-        self.material_choice.currentIndexChanged.connect(self._refresh_calibration_state)
+        overview_layout = QVBoxLayout(self.overview_tab)
+        overview_layout.setContentsMargins(20, 18, 20, 20)
+        overview_layout.setSpacing(12)
+        self.calibration_status_panel = CalibrationStatusPanel(self.overview_tab)
+        overview_layout.addWidget(self.calibration_status_panel)
 
         actions = QHBoxLayout()
         self.generate_button = QPushButton("Configure grouped ironing sweep")
@@ -335,13 +328,34 @@ class PrinterWorkspacePage(QWidget):
         actions.addWidget(self.generate_button)
         actions.addWidget(self.cancel_button)
         actions.addStretch(1)
-        layout.addLayout(actions)
+        overview_layout.addLayout(actions)
+
         self.state = QLabel("Select or add a material to prepare an ironing comparison.")
         self.state.setObjectName("mutedStatus")
         self.state.setWordWrap(True)
-        layout.addWidget(self.state)
-        self.calibration_status_panel = CalibrationStatusPanel(self)
-        layout.addWidget(self.calibration_status_panel)
+        overview_layout.addWidget(self.state)
+        overview_layout.addStretch(1)
+
+        experiments_layout = QVBoxLayout(self.experiments_tab)
+        experiments_layout.setContentsMargins(20, 18, 20, 20)
+        experiments_layout.setSpacing(12)
+        self.experiments_intro = QLabel(
+            "Saved configurations and generated plates for this printer."
+        )
+        self.experiments_intro.setObjectName("bodyCopy")
+        experiments_layout.addWidget(self.experiments_intro)
+
+        saved_configuration_row = QHBoxLayout()
+        saved_configuration_row.addWidget(QLabel("Saved ironing draft"))
+        self.saved_configuration_choice = QComboBox()
+        self.saved_configuration_choice.setAccessibleName("Open a saved ironing configuration")
+        self.saved_configuration_choice.currentIndexChanged.connect(self._sync_saved_configuration_controls)
+        saved_configuration_row.addWidget(self.saved_configuration_choice, 1)
+        self.open_configuration_button = QPushButton("Open draft…")
+        self.open_configuration_button.setObjectName("secondaryAction")
+        self.open_configuration_button.clicked.connect(self._open_saved_configuration)
+        saved_configuration_row.addWidget(self.open_configuration_button)
+        experiments_layout.addLayout(saved_configuration_row)
 
         self.run_table = QTableWidget(0, 3)
         self.run_table.setHorizontalHeaderLabels(("Plate code", "Run state", "Created"))
@@ -349,7 +363,33 @@ class PrinterWorkspacePage(QWidget):
         self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.run_table.horizontalHeader().setStretchLastSection(True)
         self.run_table.cellDoubleClicked.connect(self._open_run_by_row)
-        layout.addWidget(self.run_table, 1)
+        experiments_layout.addWidget(self.run_table, 1)
+
+        materials_layout = QVBoxLayout(self.printer_materials_tab)
+        materials_layout.setContentsMargins(20, 18, 20, 20)
+        materials_layout.setSpacing(12)
+        material_row = QHBoxLayout()
+        material_label = QLabel("Active material")
+        self.material_choice = QComboBox()
+        self.material_choice.setAccessibleName("Select a saved material")
+        material_label.setBuddy(self.material_choice)
+        material_row.addWidget(material_label)
+        material_row.addWidget(self.material_choice, 1)
+        self.add_material_button = QPushButton("Add material…")
+        self.add_material_button.setObjectName("secondaryAction")
+        self.add_material_button.clicked.connect(self._request_add_material)
+        material_row.addWidget(self.add_material_button)
+        materials_layout.addLayout(material_row)
+        self.material_helper = QLabel(
+            "Future plates keep the selected material and its saved profile snapshot with their results."
+        )
+        self.material_helper.setObjectName("mutedStatus")
+        self.material_helper.setWordWrap(True)
+        materials_layout.addWidget(self.material_helper)
+        materials_layout.addStretch(1)
+
+        self.material_choice.currentIndexChanged.connect(self._refresh_saved_configurations)
+        self.material_choice.currentIndexChanged.connect(self._refresh_calibration_state)
         if self.library is None or self.generation is None:
             self.generate_button.setEnabled(False)
             self.add_material_button.setEnabled(False)
@@ -606,15 +646,23 @@ class RunHistoryPage(QWidget):
         description.setWordWrap(True)
         layout.addWidget(heading)
         layout.addWidget(description)
-        lookup = QHBoxLayout()
+        self.lookup_controls = QFrame(self)
+        self.lookup_controls.setObjectName("plateLookupControls")
+        lookup = QHBoxLayout(self.lookup_controls)
+        lookup.setContentsMargins(0, 0, 0, 0)
+        lookup.setSpacing(8)
         self.code_entry = QLineEdit()
         self.code_entry.setMaxLength(6)
-        self.code_entry.setPlaceholderText("Enter a six-character plate code")
-        self.lookup_button = QPushButton("Look up code")
+        self.code_entry.setAccessibleName("Find a saved plate by its six-character code")
+        self.code_entry.setPlaceholderText("6-character plate code")
+        self.lookup_button = QPushButton("Find plate")
+        self.lookup_button.setAccessibleName("Find plate by code")
+        self.lookup_button.setObjectName("secondaryAction")
         self.lookup_button.clicked.connect(self._lookup)
+        self.code_entry.returnPressed.connect(self.lookup_button.click)
         lookup.addWidget(self.code_entry, 1)
         lookup.addWidget(self.lookup_button)
-        layout.addLayout(lookup)
+        layout.addWidget(self.lookup_controls)
         self.lookup_result = QPlainTextEdit()
         self.lookup_result.setReadOnly(True)
         self.lookup_result.setMaximumHeight(150)

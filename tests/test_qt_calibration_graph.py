@@ -65,11 +65,21 @@ class QtCalibrationGraphTests(unittest.TestCase):
         states = (
             (CalibrationStatus.UNTESTED, True),
             (CalibrationStatus.BLOCKED, False),
+            (CalibrationStatus.READY, True),
             (CalibrationStatus.IN_PROGRESS, False),
             (CalibrationStatus.NEEDS_REVIEW, True),
             (CalibrationStatus.ACCEPTED, True),
             (CalibrationStatus.STALE, False),
         )
+        status_labels = {
+            CalibrationStatus.UNTESTED: "Untested",
+            CalibrationStatus.BLOCKED: "Blocked",
+            CalibrationStatus.READY: "Can configure",
+            CalibrationStatus.IN_PROGRESS: "In progress",
+            CalibrationStatus.NEEDS_REVIEW: "Needs review",
+            CalibrationStatus.ACCEPTED: "Accepted",
+            CalibrationStatus.STALE: "Stale",
+        }
         for status, can_start in states:
             with self.subTest(status=status.value):
                 panel.set_states((CalibrationState(
@@ -80,7 +90,9 @@ class QtCalibrationGraphTests(unittest.TestCase):
                     recommendations=("Review the physical sample by hand.",),
                 ),))
                 self.assertIn("Ironing", panel.workflow_label.text())
-                self.assertEqual(panel.status_label.text(), status.value.replace("_", " ").title())
+                self.assertEqual(panel.status_label.text(), status_labels[status])
+                self.assertEqual(panel.status_label.property("state"), status.value)
+                self.assertEqual(panel.status_icon.state, status.value)
                 self.assertEqual(
                     panel.can_start_label.text(),
                     f"Can start: {'yes' if can_start else 'no'}",

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -241,9 +242,11 @@ class ExperimentDetailsDialog(QDialog):
         self._followup_task: _FollowupTask | None = None
         self.generated_child_run_id: str | None = None
         self.setWindowTitle(f"Experiment Details · {self.run.plate_code}")
-        self.resize(1040, 920)
+        self.resize(1100, 800)
+        self.setMinimumSize(920, 650)
         root = QVBoxLayout(self)
-        root.setSpacing(10)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(9)
 
         title = QLabel(f"Plate {self.run.plate_code}")
         title.setObjectName("pageTitle")
@@ -262,11 +265,30 @@ class ExperimentDetailsDialog(QDialog):
         readiness.setObjectName("mutedStatus")
         root.addWidget(readiness)
 
-        validation = QPlainTextEdit()
-        validation.setReadOnly(True)
-        validation.setMaximumHeight(155)
-        validation.setPlainText(_validation_summary(self.run))
-        root.addWidget(validation)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("plateDetailTabs")
+        self.inspect_tab = QWidget()
+        self.assess_tab = QWidget()
+        self.decision_tab = QWidget()
+        self.export_tab = QWidget()
+        self.tabs.addTab(self.inspect_tab, "Inspect")
+        self.tabs.addTab(self.assess_tab, "Assess")
+        self.tabs.addTab(self.decision_tab, "Decision")
+        self.tabs.addTab(self.export_tab, "Export")
+        root.addWidget(self.tabs, 1)
+
+        inspect_layout = QVBoxLayout(self.inspect_tab)
+        inspect_layout.setContentsMargins(18, 16, 18, 18)
+        inspect_layout.setSpacing(10)
+        self.inspect_intro = QLabel("Validation, the sample map, and retained files for this plate.")
+        self.inspect_intro.setObjectName("bodyCopy")
+        self.inspect_intro.setWordWrap(True)
+        inspect_layout.addWidget(self.inspect_intro)
+        self.validation = QPlainTextEdit()
+        self.validation.setReadOnly(True)
+        self.validation.setMaximumHeight(145)
+        self.validation.setPlainText(_validation_summary(self.run))
+        inspect_layout.addWidget(self.validation)
         geometry_identity = dict(self.run.validation.get("geometry", {}))
         identifier_path = (
             library.repository.runs_root
@@ -279,7 +301,7 @@ class ExperimentDetailsDialog(QDialog):
             self.run.plate_code,
             legacy=geometry_identity.get("backend_id") == "stdlib-voxel",
         )
-        root.addWidget(self.identifier_preview)
+        inspect_layout.addWidget(self.identifier_preview)
         artifact_row = QHBoxLayout()
         artifact_row.addWidget(QLabel("Saved artifact"))
         self.artifact_choice = QComboBox()
@@ -291,10 +313,21 @@ class ExperimentDetailsDialog(QDialog):
         self.open_artifact_button.setEnabled(bool(self.run.artifacts))
         self.open_artifact_button.clicked.connect(self._open_selected_artifact)
         artifact_row.addWidget(self.open_artifact_button)
-        root.addLayout(artifact_row)
+        inspect_layout.addLayout(artifact_row)
+        inspect_layout.addStretch(1)
 
-        attestation_group = QGroupBox("Physical trial attestation")
-        attestation_form = QGridLayout(attestation_group)
+        assess_layout = QVBoxLayout(self.assess_tab)
+        assess_layout.setContentsMargins(18, 16, 18, 18)
+        assess_layout.setSpacing(10)
+        self.assess_intro = QLabel(
+            "Enter manual sample results and physical trial evidence. Uncertain and missing outcomes stay explicit."
+        )
+        self.assess_intro.setObjectName("bodyCopy")
+        self.assess_intro.setWordWrap(True)
+        assess_layout.addWidget(self.assess_intro)
+
+        self.attestation_group = QGroupBox("Physical trial attestation")
+        attestation_form = QGridLayout(self.attestation_group)
         self.physical_print = QComboBox()
         self.physical_print.addItem("Not recorded", None)
         self.physical_print.addItem("No physical print", False)
@@ -341,7 +374,7 @@ class ExperimentDetailsDialog(QDialog):
         attestation_form.addWidget(self.attestation_notes, 4, 3)
         attestation_form.setColumnStretch(1, 1)
         attestation_form.setColumnStretch(3, 1)
-        root.addWidget(attestation_group)
+        assess_layout.addWidget(self.attestation_group)
         self.physical_print.currentIndexChanged.connect(self._sync_attestation_controls)
         self.synthetic.toggled.connect(self._sync_attestation_controls)
 
@@ -355,10 +388,23 @@ class ExperimentDetailsDialog(QDialog):
             self.samples_layout.addWidget(editor)
         self.samples_layout.addStretch(1)
         self.scroll.setWidget(self.scroll_content)
-        root.addWidget(self.scroll, 1)
+        assess_layout.addWidget(self.scroll, 1)
+        self.save_button = QPushButton("Save assessment draft")
+        self.save_button.setObjectName("primaryAction")
+        self.save_button.clicked.connect(self._save)
+        assess_layout.addWidget(self.save_button, 0, Qt.AlignmentFlag.AlignLeft)
 
-        decision_group = QGroupBox("Selection (manual)")
-        decision_form = QFormLayout(decision_group)
+        decision_layout = QVBoxLayout(self.decision_tab)
+        decision_layout.setContentsMargins(18, 16, 18, 18)
+        decision_layout.setSpacing(12)
+        self.decision_intro = QLabel(
+            "Choose what should happen next from the saved assessment. Ties and range edges remain explicit."
+        )
+        self.decision_intro.setObjectName("bodyCopy")
+        self.decision_intro.setWordWrap(True)
+        decision_layout.addWidget(self.decision_intro)
+        self.decision_group = QGroupBox("Selection (manual)")
+        decision_form = QFormLayout(self.decision_group)
         self.selected_candidate = QComboBox()
         self.selected_candidate.addItem("No selection", None)
         for candidate in self.run.plan.candidates:
@@ -370,63 +416,82 @@ class ExperimentDetailsDialog(QDialog):
         decision_form.addRow("Selected candidate", self.selected_candidate)
         decision_form.addRow("Other tied candidates", self.tie_candidates)
         decision_form.addRow("Confirmation opt-out reason", self.opt_out_reason)
-        root.addWidget(decision_group)
+        decision_layout.addWidget(self.decision_group)
 
         self.decision_summary = QLabel("Save a manual assessment before asking for a recommendation.")
         self.decision_summary.setWordWrap(True)
         self.decision_summary.setObjectName("mutedStatus")
-        root.addWidget(self.decision_summary)
-        self.export_history = QLabel("No process exports saved for this run.")
-        self.export_history.setWordWrap(True)
-        self.export_history.setObjectName("mutedStatus")
-        root.addWidget(self.export_history)
+        decision_layout.addWidget(self.decision_summary)
         self.lineage_summary = QLabel("No linked follow-up plates.")
         self.lineage_summary.setWordWrap(True)
         self.lineage_summary.setObjectName("mutedStatus")
-        root.addWidget(self.lineage_summary)
-
-        action_row = QHBoxLayout()
-        self.feedback = QLabel("")
-        self.feedback.setWordWrap(True)
-        self.feedback.setObjectName("mutedStatus")
-        self.save_button = QPushButton("Save assessment draft")
-        self.save_button.setObjectName("primaryAction")
-        self.save_button.clicked.connect(self._save)
+        decision_layout.addWidget(self.lineage_summary)
+        decision_actions = QHBoxLayout()
         self.evaluate_button = QPushButton("Get recommendation")
+        self.evaluate_button.setObjectName("secondaryAction")
         self.evaluate_button.setEnabled(self.revision is not None)
         self.evaluate_button.clicked.connect(self._evaluate_decision)
         self.refine_button = QPushButton("Create refinement run")
+        self.refine_button.setObjectName("secondaryAction")
         self.refine_button.setEnabled(False)
         self.refine_button.clicked.connect(lambda: self._create_followup("refinement"))
         self.confirmation_button = QPushButton("Create confirmation run")
+        self.confirmation_button.setObjectName("secondaryAction")
         self.confirmation_button.setEnabled(False)
         self.confirmation_button.clicked.connect(lambda: self._create_followup("confirmation"))
-        self.export_button = QPushButton("Review Orca export…")
-        self.export_button.setEnabled(False)
-        self.export_button.clicked.connect(self._review_export)
         self.child_button = QPushButton("Open generated run details")
+        self.child_button.setObjectName("secondaryAction")
         self.child_button.setEnabled(False)
         self.child_button.clicked.connect(self._open_generated_child)
+        decision_actions.addWidget(self.evaluate_button)
+        decision_actions.addWidget(self.refine_button)
+        decision_actions.addWidget(self.confirmation_button)
+        decision_actions.addWidget(self.child_button)
+        decision_actions.addStretch(1)
+        decision_layout.addLayout(decision_actions)
+        decision_layout.addStretch(1)
+
+        export_layout = QVBoxLayout(self.export_tab)
+        export_layout.setContentsMargins(18, 16, 18, 18)
+        export_layout.setSpacing(12)
+        self.export_intro = QLabel(
+            "Review the exact values and evidence before writing a new Orca-compatible process profile."
+        )
+        self.export_intro.setObjectName("bodyCopy")
+        self.export_intro.setWordWrap(True)
+        export_layout.addWidget(self.export_intro)
+        self.export_gate_message = QLabel("")
+        self.export_gate_message.setWordWrap(True)
+        self.export_gate_message.setObjectName("mutedStatus")
+        export_layout.addWidget(self.export_gate_message)
+        self.export_history = QLabel("No process exports saved for this run.")
+        self.export_history.setWordWrap(True)
+        self.export_history.setObjectName("mutedStatus")
+        export_layout.addWidget(self.export_history)
+        self.export_button = QPushButton("Review Orca export…")
+        self.export_button.setObjectName("primaryAction")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._review_export)
+        export_layout.addWidget(self.export_button, 0, Qt.AlignmentFlag.AlignLeft)
+        export_layout.addStretch(1)
+
+        footer = QHBoxLayout()
+        self.feedback = QLabel("")
+        self.feedback.setWordWrap(True)
+        self.feedback.setObjectName("mutedStatus")
         close_button = QPushButton("Close")
+        close_button.setObjectName("secondaryAction")
         close_button.clicked.connect(self.reject)
-        action_row.addWidget(self.save_button)
-        action_row.addWidget(self.evaluate_button)
-        action_row.addWidget(self.refine_button)
-        action_row.addWidget(self.confirmation_button)
-        action_row.addStretch(1)
-        root.addLayout(action_row)
-        history_row = QHBoxLayout()
-        history_row.addWidget(self.export_button)
-        history_row.addWidget(self.child_button)
-        history_row.addWidget(self.feedback, 1)
-        history_row.addWidget(close_button)
-        root.addLayout(history_row)
+        footer.addWidget(self.feedback, 1)
+        footer.addWidget(close_button)
+        root.addLayout(footer)
         self._load_revision()
         self._load_saved_decision()
         self._load_export_history()
         self._load_child_runs()
         self._sync_attestation_controls()
         self._connect_dirty_signals()
+        self._sync_export_gate_message()
 
     def _load_revision(self) -> None:
         self._loading_assessment = True
@@ -488,6 +553,36 @@ class ExperimentDetailsDialog(QDialog):
         self.confirmation_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.decision_summary.setText("Unsaved assessment edits are shown. Save them before requesting a recommendation or using its actions.")
+        self._sync_export_gate_message()
+
+    def _sync_export_gate_message(self) -> None:
+        if self._assessment_dirty:
+            message = (
+                "Export is locked while assessment edits are unsaved. Save the assessment, "
+                "then request a fresh recommendation."
+            )
+        elif self.revision is None:
+            message = (
+                "Export is locked until you save an assessment, record physical trial evidence, "
+                "and request a recommendation."
+            )
+        elif self.decision is None:
+            message = (
+                "Export is locked until a saved decision passes the physical-evidence and "
+                "validation gates. Complete the trial evidence under Assess, then request a "
+                "recommendation under Decision."
+            )
+        elif self.decision.can_accept and self.decision.action == "accept":
+            message = (
+                "This saved decision is eligible for export review. Check the exact values "
+                "and evidence before writing a new process profile. Print-ready status is not implied."
+            )
+        else:
+            message = (
+                "Export is locked because the saved recommendation does not currently permit "
+                "acceptance. Open Decision to review its specific reasons and next steps."
+            )
+        self.export_gate_message.setText(message)
 
     def _sync_attestation_controls(self, *_args) -> None:
         physical = self.physical_print.currentData()
@@ -556,6 +651,7 @@ class ExperimentDetailsDialog(QDialog):
             self.confirmation_button.setEnabled(False)
             self.export_button.setEnabled(False)
             self.decision_summary.setText("Save the updated assessment, then request a new recommendation.")
+            self._sync_export_gate_message()
             self.feedback.setText(
                 f"Saved revision {self.revision.revision_no} · assessment complete: "
                 f"{_assessment_complete(self.revision.results, self.run)} · physical acceptance: "
@@ -569,6 +665,7 @@ class ExperimentDetailsDialog(QDialog):
     def _evaluate_decision(self) -> None:
         if self.revision is None or self._assessment_dirty:
             self.decision_summary.setText("Save the current assessment draft before requesting a recommendation.")
+            self._sync_export_gate_message()
             return
         try:
             self.decision = self.decision_service.evaluate(
@@ -578,6 +675,7 @@ class ExperimentDetailsDialog(QDialog):
             )
         except Exception as exc:
             self.decision_summary.setText(f"Recommendation could not be saved: {exc}")
+            self._sync_export_gate_message()
             return
         explanation = "\n".join(f"• {reason}" for reason in self.decision.reasons)
         self.decision_summary.setText(
@@ -590,6 +688,7 @@ class ExperimentDetailsDialog(QDialog):
             supports_followup and self.decision.action == "refine"
         )
         self.export_button.setEnabled(self.decision.can_accept and self.decision.action == "accept")
+        self._sync_export_gate_message()
 
     def _create_followup(self, kind: str) -> None:
         if self._assessment_dirty:
@@ -657,6 +756,7 @@ class ExperimentDetailsDialog(QDialog):
         self.refine_button.setEnabled(supports_followup)
         self.confirmation_button.setEnabled(supports_followup and self.decision.action == "refine")
         self.export_button.setEnabled(self.decision.can_accept and self.decision.action == "accept")
+        self._sync_export_gate_message()
 
     def _load_export_history(self) -> None:
         exports = self.library.repository.list_run_exports(self.run.run_id)

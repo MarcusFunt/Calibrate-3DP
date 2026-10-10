@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -46,6 +46,37 @@ def _search_icon() -> QIcon:
     painter.drawLine(12, 12, 17, 17)
     painter.end()
     return QIcon(pixmap)
+
+
+def _settings_icon() -> QIcon:
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor(TOKENS.muted), 1.6))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(5, 5, 10, 10)
+    painter.drawEllipse(8, 8, 4, 4)
+    for dx, dy in ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)):
+        painter.drawLine(10 + dx * 6, 10 + dy * 6, 10 + dx * 9, 10 + dy * 9)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _context_pill(caption: str, value: str) -> tuple[QFrame, QLabel]:
+    pill = QFrame()
+    pill.setObjectName("contextPill")
+    content = QVBoxLayout(pill)
+    content.setContentsMargins(10, 5, 10, 5)
+    content.setSpacing(0)
+    label = QLabel(caption.upper())
+    label.setObjectName("contextLabel")
+    value_label = QLabel(value)
+    value_label.setObjectName("contextValue")
+    value_label.setMaximumWidth(180)
+    content.addWidget(label)
+    content.addWidget(value_label)
+    return pill, value_label
 
 
 class RadioIndicator(QWidget):
@@ -404,12 +435,11 @@ class MainWindow(QMainWindow):
 
         canvas = QWidget()
         canvas.setObjectName("appCanvas")
-        root = QHBoxLayout(canvas)
+        root = QVBoxLayout(canvas)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         self.navigation = NavigationRail()
         self.navigation.page_selected.connect(self.navigate_to)
-        root.addWidget(self.navigation)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pageStack")
@@ -444,6 +474,55 @@ class MainWindow(QMainWindow):
                 "Settings", "OrcaSlicer setup is available in the configured local application."
             )
         self._add_page(AppPage.SETTINGS, settings_page)
+
+        self.header = QFrame()
+        self.header.setObjectName("appHeader")
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(24, 12, 24, 12)
+        header_layout.setSpacing(12)
+
+        self.brand_button = QPushButton("Calibrate-3DP")
+        self.brand_button.setObjectName("brandButton")
+        self.brand_button.setAccessibleName("Open the printer library")
+        self.brand_button.setToolTip("Printer library")
+        self.brand_button.clicked.connect(lambda: self.navigate_to(AppPage.PRINTER_LIBRARY))
+        header_layout.addWidget(self.brand_button)
+
+        divider = QFrame()
+        divider.setObjectName("divider")
+        divider.setFixedWidth(1)
+        header_layout.addWidget(divider)
+
+        printer_pill, self.printer_context_value = _context_pill("Printer", "Choose a printer")
+        material_pill, self.material_context_value = _context_pill("Material", "No material selected")
+        header_layout.addWidget(printer_pill)
+        header_layout.addWidget(material_pill)
+        header_layout.addStretch(1)
+
+        self.plate_code_entry = self.history_page.code_entry
+        self.plate_code_entry.setMinimumWidth(180)
+        self.plate_code_entry.setClearButtonEnabled(True)
+        self.plate_lookup_button = self.history_page.lookup_button
+        self.plate_lookup_button.clicked.disconnect(self.history_page._lookup)
+        self.plate_lookup_button.clicked.connect(self._lookup_global_plate)
+        header_layout.addWidget(self.history_page.lookup_controls)
+
+        settings_button = self.navigation.buttons[AppPage.SETTINGS]
+        settings_button.setText("Settings")
+        settings_button.setIcon(_settings_icon())
+        settings_button.setIconSize(QSize(17, 17))
+        settings_button.setObjectName("settingsButton")
+        settings_button.setAccessibleName("Settings")
+        settings_button.setToolTip("Settings")
+        header_layout.addWidget(settings_button)
+
+        self.workspace_page.material_choice.currentTextChanged.connect(
+            lambda _text: self._sync_header_context()
+        )
+        self._sync_header_context()
+
+        root.addWidget(self.header)
+        root.addWidget(self.navigation)
         root.addWidget(self.pages, 1)
         self.setCentralWidget(canvas)
         self.navigation.set_current_page(self._current_page)
@@ -462,7 +541,20 @@ class MainWindow(QMainWindow):
     def _open_printer_workspace(self, printer_id: str) -> None:
         self.view_model.select(printer_id)
         self.workspace_page.show_printer(self.view_model.selected_printer)
+        self._sync_header_context()
         self.navigate_to(AppPage.PRINTER_WORKSPACE)
+
+    def _sync_header_context(self) -> None:
+        printer = self.view_model.selected_printer
+        self.printer_context_value.setText(
+            printer.name if printer is not None else "Choose a printer"
+        )
+        material = self.workspace_page.material_choice.currentText().strip()
+        self.material_context_value.setText(material or "No material selected")
+
+    def _lookup_global_plate(self) -> None:
+        self.navigate_to(AppPage.RUNS_HISTORY)
+        self.history_page._lookup()
 
     def _add_printer(self) -> None:
         if self.library_service is None:
