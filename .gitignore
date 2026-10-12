@@ -1,2 +1,10 @@
 __pycache__/
 *.py[cod]
+
+# Python packaging artifacts
+/build/
+/dist/
+*.egg-info/
+
+# Frontend dependencies
+/frontend/gcode-viewer/node_modules/
