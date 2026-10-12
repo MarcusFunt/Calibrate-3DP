@@ -229,9 +229,15 @@ class OrcaCliTests(unittest.TestCase):
             self.assertEqual(argv[1:3], ("--slice", "0"))
             self.assertEqual(argv[argv.index("--arrange") + 1], "0")
             self.assertEqual(argv[argv.index("--orient") + 1], "0")
-            self.assertEqual(argv[argv.index("--load-settings") + 1], f"{machine};{process}")
-            self.assertEqual(argv[argv.index("--load-filaments") + 1], str(filament))
-            self.assertEqual(argv[-1], str(model))
+            self.assertEqual(
+                argv[argv.index("--load-settings") + 1],
+                f"{machine.resolve(strict=True)};{process.resolve(strict=True)}",
+            )
+            self.assertEqual(
+                argv[argv.index("--load-filaments") + 1],
+                str(filament.resolve(strict=True)),
+            )
+            self.assertEqual(argv[-1], str(model.resolve(strict=True)))
 
             (output / "stale.gcode").write_text("old")
             with self.assertRaises(OrcaCliError):
@@ -261,7 +267,7 @@ class OrcaCliTests(unittest.TestCase):
 
             self.assertIn("--info", argv)
             self.assertEqual(argv[argv.index("--export-3mf") + 1], "sample.gcode.3mf")
-            self.assertEqual(argv[-1], str(model))
+            self.assertEqual(argv[-1], str(model.resolve(strict=True)))
 
             with self.assertRaisesRegex(OrcaCliError, "filename"):
                 cli.build_slice_argv(

@@ -162,5 +162,3 @@ class QtGcodeViewerTests(unittest.TestCase):
 
             self.assertIn("Preview unavailable", page_text)
             self.assertTrue(dialog._load_failed)
-
-\n

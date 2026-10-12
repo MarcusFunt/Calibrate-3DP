@@ -115,7 +115,7 @@ class AssessmentServiceTests(unittest.TestCase):
         except OSError as exc:
             self.skipTest(f"symbolic links are unavailable in this environment: {exc}")
 
-        with self.assertRaises(LibraryStoreError):
+        with self.assertRaisesRegex(AssessmentServiceError, "unsafe"):
             self.service.save(
                 self.run.run_id, expected_revision=0,
                 results=self.service.empty_draft(self.run.run_id),

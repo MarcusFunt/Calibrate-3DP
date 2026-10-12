@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-This status is updated on 2026-10-12. The primary checkout at `D:\projects\Calibrate-3DP` is on `main`, continuing the UI work from HEAD `e1de191` (`Resize default ironing coupons`). The managed `codex/build123d-migration` references in earlier status/history are historical. Current local Orca setup evidence is recorded below and in `docs/PROGRESS_HISTORY.md`.
+This status is updated on 2026-10-12. The primary checkout at `D:\projects\Calibrate-3DP` is on `main` at HEAD `d135e874d3c6f4ef0ac54c55ad3a971ef01e23b5` (`Add calibration workflows and print tooling`). The managed `codex/build123d-migration` references in earlier status/history are historical. Current local Orca setup evidence is recorded below and in `docs/PROGRESS_HISTORY.md`.
 
 The target remains the manual, local-first product in [V1_GOAL.md](V1_GOAL.md). Passing one profile/version configuration does not establish a general support claim.
 
@@ -12,7 +12,7 @@ The target remains the manual, local-first product in [V1_GOAL.md](V1_GOAL.md). 
 
 `.github/workflows/windows-development-build.yml` runs on pushes and pull requests targeting `main`, and on manual dispatch. It runs the test suite, builds a frozen Windows x64 onedir application with the GUI, CAD backend, and bundled G-code viewer, performs a non-UI bundle self-check, then uploads a ZIP and SHA-256 checksum as a 30-day Actions artifact. OrcaSlicer remains a separately installed application. The workflow does not create a GitHub Release.
 
-Local freezer evidence on 2026-10-12: PyInstaller 6.22.3 with Python 3.11.4, PySide6 6.12.0, and the pinned CAD backend produced a 933,175,865-byte onedir tree and a 346,300,893-byte ZIP. The frozen self-check exited 0; all 9,671 archive entries passed CRC checks, its SHA-256 matched the sidecar (`ef1f262a978d358a4f0d1751884c529a80af8ddd5e74fbd78df64d1a11dc67c7`), and the archive contains the executable, warning, and G-code viewer entry point. The packager's PATH is restricted to Python and Windows system directories because an unrelated host Poppler ICU library otherwise conflicted with Qt during freezing. The GitHub-hosted workflow has not yet run. This evidence verifies packaging and import/resource presence, not a signed installer, broad machine support, physical printing, or trustworthiness.
+Local freezer evidence on 2026-10-12: PyInstaller 6.22.3 with Python 3.11.4, PySide6 6.12.0, and the pinned CAD backend produced a 933,175,865-byte onedir tree and a 346,300,893-byte ZIP. The frozen self-check exited 0; all 9,671 archive entries passed CRC checks, its SHA-256 matched the sidecar (`ef1f262a978d358a4f0d1751884c529a80af8ddd5e74fbd78df64d1a11dc67c7`), and the archive contains the executable, warning, and G-code viewer entry point. The packager's PATH is restricted to Python and Windows system directories because an unrelated host Poppler ICU library otherwise conflicted with Qt during freezing. The first hosted run ([38231833029](https://github.com/MarcusFunt/Calibrate-3DP/actions/runs/38231833029)) reached the test suite but failed on Windows path aliases, the expected service-level symlink exception, and a malformed G-code viewer test file. The follow-up corrections pass the local full suite; hosted build and artifact upload remain pending. This evidence verifies packaging and import/resource presence, not a signed installer, broad machine support, physical printing, or trustworthiness.
 
 ## Implemented foundation
 
