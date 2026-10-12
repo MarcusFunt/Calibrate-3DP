@@ -274,6 +274,16 @@ def write_plate_geometry_3mf(
         raise GroupedPlateError("connected plate geometry must pass backend validation")
     if not isinstance(module_id, str) or not module_id.strip() or not isinstance(plan_id, str) or not plan_id.strip():
         raise GroupedPlateError("module_id and plan_id must be non-empty strings")
+    if module_id == "flow_ratio" and (
+        geometry.backend_id != "build123d" or
+        (geometry.metadata.get("recipe_id"), geometry.metadata.get("recipe_version"))
+        != ("flow_ratio.top_surface_matrix", "1")
+    ):
+        raise GroupedPlateError("flow ratio plate requires the versioned build123d flow matrix recipe")
+    if module_id == "ironing" and geometry.backend_id == "build123d" and (
+        geometry.metadata.get("recipe_id"), geometry.metadata.get("recipe_version")
+    ) != ("ironing.flat_coupon", "2"):
+        raise GroupedPlateError("ironing plate requires the versioned ironing recipe")
     if isinstance(omitted_candidate_ids, (str, bytes)):
         raise GroupedPlateError("omitted_candidate_ids must be a set of candidate IDs")
     known_ids = {obj.candidate_id for obj in geometry.objects if obj.sample_label is not None}
@@ -296,8 +306,14 @@ def write_plate_geometry_3mf(
         if obj.sample_label is not None:
             applied = obj.candidate_id not in omitted_candidate_ids
             if applied:
-                ET.SubElement(part, "metadata", {"key": "ironing_flow", "value": _flow_text(obj.settings.get("ironing_flow"))})
-                ET.SubElement(part, "metadata", {"key": "ironing_speed", "value": str(obj.settings.get("ironing_speed"))})
+                if module_id == "ironing":
+                    ET.SubElement(part, "metadata", {"key": "ironing_flow", "value": _flow_text(obj.settings.get("ironing_flow"))})
+                    ET.SubElement(part, "metadata", {"key": "ironing_speed", "value": str(obj.settings.get("ironing_speed"))})
+                else:
+                    ratio = _as_positive_float(obj.settings.get("print_flow_ratio"), obj.name, "print_flow_ratio")
+                    if not 0.5 <= ratio <= 1.5:
+                        raise GroupedPlateError(f"{obj.name} print_flow_ratio is outside the approved range")
+                    ET.SubElement(part, "metadata", {"key": "print_flow_ratio", "value": format(ratio, ".12g")})
             manifest_samples.append({
                 "label": obj.name,
                 "physical_label": obj.printed_marking,

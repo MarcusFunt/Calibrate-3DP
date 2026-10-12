@@ -53,3 +53,13 @@ The installed Orca integration test is opt-in. It requires ORCA_SLICER_EXE and O
 ## Development principles
 
 Keep domain models and calibration logic independent of the GUI. Preserve profile provenance and unknown settings. Do not write to the user's Orca preset directory. Use Orca as the final slicer, validate each generated candidate, and preserve failed or canceled job evidence. Keep user assessment manual and explicit.
+
+## Experimental top-surface flow matrix generator
+
+A standalone versioned Build123d flow-ratio model generator is available at
+`tools/generate_top_surface_flow_matrix.py`. It creates 1–9 labeled solid-top
+coupons in one multi-object Orca 3MF plate and a JSON candidate/provenance
+manifest. It is **not** integrated with the GUI or saved calibration runs and
+never marks the output ready to print. See
+[`docs/TOP_SURFACE_FLOW_MATRIX.md`](docs/TOP_SURFACE_FLOW_MATRIX.md) for CLI
+arguments, slicer assumptions, validation evidence, and remaining blockers.
