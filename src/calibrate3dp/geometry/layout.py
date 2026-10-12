@@ -248,8 +248,19 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
         units = value / request.voxel_mm
         if requires_voxel_alignment and abs(units - round(units)) > 1e-8:
             raise PlateLayoutError(f"{name} must be an exact multiple of voxel_mm")
+    # Recipes own their setting contracts; do not force ironing metadata onto
+    # flow-ratio models just to satisfy a legacy geometry check.
+    settings_keys = (
+        ("print_flow_ratio",)
+        if (request.recipe_id, request.recipe_version) == ("flow_ratio.top_surface_matrix", "1")
+        else ("ironing_flow", "ironing_speed")
+    )
     for sample in request.samples:
-        for setting in ("ironing_flow", "ironing_speed"):
+        if set(sample.settings) != set(settings_keys):
+            raise PlateLayoutError(
+                f"sample {sample.label} settings must be exactly {', '.join(settings_keys)}"
+            )
+        for setting in settings_keys:
             value = sample.settings.get(setting)
             try:
                 number = float(str(value).removesuffix("%").strip())
@@ -398,9 +409,11 @@ def layout_plate(request: PlateLayoutRequest) -> PlateLayout:
 
 
 def _build123d_identifier_layout(layout: PlateLayout, request: PlateLayoutRequest) -> PlateLayout:
-    if (request.recipe_id, request.recipe_version, request.layout_version) != (
-        "ironing.flat_coupon", "2", "2"
-    ):
+    supported_recipes = {
+        ("ironing.flat_coupon", "2", "2"),
+        ("flow_ratio.top_surface_matrix", "1", "2"),
+    }
+    if (request.recipe_id, request.recipe_version, request.layout_version) not in supported_recipes:
         raise PlateLayoutError("unsupported build123d recipe or layout version")
     corners = {"front_left", "front_right", "back_left", "back_right"}
     if request.identifier_corner not in corners:

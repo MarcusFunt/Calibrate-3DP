@@ -535,3 +535,68 @@ The v2.4.2 GUI/CLI executable returned no text for `--help` or `-h`, and rejecte
 - Files changed: `docs/IMPLEMENTATION_STATUS.md` and this entry. No source or test code changed after the successful CI run.
 - Verification: `gh run view 38240521584 --json status,conclusion,jobs,url` reported `completed` / `success`; `gh api repos/MarcusFunt/Calibrate-3DP/actions/runs/38240521584/artifacts` confirmed the artifact ID, name, size, digest, and expiry.
 - Correction: The preceding CI-fix entry's “hosted run remains pending” sentence records its state at that time. This follow-up closes that item with the successful run and uploaded artifact.
+
+## 2026-10-12 — standalone top-surface flow matrix recipe and real Orca spike
+
+- **Baseline:** `origin/main` at `fe830517f81c380ea6b894b356869542847eb84f`.
+  All changes were made in separate worktree
+  `D:\\projects\\Calibrate-3DP-flow-matrix` on
+  `codex/top-surface-flow-matrix-20261012`; primary user checkout
+  `D:\\projects\\Calibrate-3DP` had unrelated local changes and was not edited.
+- **Scope:** New `flow_ratio.top_surface_matrix@1` parametric CAD recipe and CLI,
+  1–9 labeled solid-top flat coupons, v2 shared frame and corner code plaque,
+  deterministic additive filament flow candidates, frozen candidate map,
+  first-party Orca per-object `print_flow_ratio` 3MF metadata, manifest SHA-256,
+  and fail-closed top-surface relative-extrusion G-code evidence. No GUI flow,
+  run database registration or reviewed profile export.
+- **Setting semantics:** For baseline material `filament_flow_ratio = B` and
+  additive modifier `m`, the intended target is `B+m` and each 3MF object
+  receives `print_flow_ratio = (B+m)/B`. Global `print_flow_ratio` and other
+  flow multipliers must be controlled and evidence verified in any later V1
+  integration. No source filament preset was modified.
+- **Changed source:** `geometry/flow_ratio_matrix.py`,
+  `calibration/flow_ratio_gcode.py`, `geometry/layout.py`,
+  `grouped_plate.py`, standalone `tools/generate_top_surface_flow_matrix.py`;
+  tests in `tests/test_top_surface_flow_matrix.py`. Versioned documentation in
+  `docs/TOP_SURFACE_FLOW_MATRIX.md`.
+- **Verified:** `python -m unittest discover -s tests -p test_plate_layout.py -v`
+  passed 12 tests; `test_grouped_plate.py` passed 12 tests. In a separate
+  pinned `build123d==0.13.0` / `cadquery-ocp-novtk==8.0.1.1.0` environment,
+  the recipe's initial seven tests passed, including real CAD/BREP tessellation,
+  object/part mapping and negative omission checks; all ten
+  `test_grouped_orca_service.py` tests passed there.
+- **End-to-end model sample:** Ran
+  `tools/generate_top_surface_flow_matrix.py --plate-code FLOW01 --baseline-ratio 0.98 --output D:\\temp\\c3dp-FLOW01.3mf`.
+  Output contained nine candidates with absolute material ratios 0.94 through
+  1.02 and relative object multipliers 0.95918367 through 1.04081633. Exact
+  artifacts and sidecar retained under `D:\\temp`.
+- **Orca positive:** Sliced the nine-coupon model using installed OrcaSlicer
+  2.4.2 (binary SHA-256 documented in `IMPLEMENTATION_STATUS.md`), resolved
+  prior Creality machine/process/filament profile snapshots, explicit
+  `ironing_type = no ironing`, `print_flow_ratio = 1` default, and top
+  pattern `monotonicline`. Slice returned 0, with 2,381,939-byte
+  `plate_1.gcode`. Shared-layout and label/plaque feature G-code validations
+  passed. All nine top-surface coupons had 98 positive-extrusion moves and
+  approximately 1,764.1 mm of extruded path; normalized E/mm values were all
+  approximately 0.029127 and matched expected per-object ratios. Captured
+  machine/filament/process snapshots, G-code, Orca output and logs under
+  `D:\\temp\\c3dp-flow-orca-evidence\\20261012T130852Z`.
+- **Orca negative:** Removed `Sample-A`'s required per-object override,
+  re-sliced with the same local binary and copied profiles; output returned 0
+  but `validate_top_surface_flow_gcode` **rejected** it with a 4.26%
+  normalized top-surface mismatch. Evidence under
+  `D:\\temp\\c3dp-flow-orca-evidence\\negative-20261012T131332Z`.
+- **Full-suite limitation:** An unqualified sweep with the project's existing
+  Qt environment, which does not have the CAD extra, ran 331 tests and
+  reported six failures, two errors and 25 skips. Most grouped-generation
+  failures occurred because the pinned CAD runtime was absent; a separate
+  Qt viewer assertion did not observe the expected toolpath text. This is
+  not proof of a regression-free full suite, and the viewer failure needs a
+  controlled comparison if pursued. Targeted legacy suites and CAD-enabled
+  grouped service tests passed. No physical print or safety certification.
+- **Outstanding:** Register the flow module in the typed experiment planner and
+  Qt workspace, allocate codes through SQLite, resolve/verify profile baseline
+  at generation time, enforce a real-Orca settings/toolpath support gate,
+  integrate manual assessment and reviewed filament export, run physical
+  printability tests and broader supported-version G-code safety checks.
+  `print_ready` remains false.

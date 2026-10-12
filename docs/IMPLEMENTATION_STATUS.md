@@ -97,3 +97,33 @@ The full real-Orca integration class passed all three cases on v2.4.2 in 51.475 
 ## V1 completion gate
 
 Use [V1_GOAL.md](V1_GOAL.md) for acceptance criteria and [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) for task evidence. V1 is not complete: grouped settings pass a narrow real-Orca gate, and Qt now has saved configuration, manual assessment, linked follow-up, and reviewed-export paths. Physical print/handling acceptance, complete G-code validation, eligible export evidence, migration/recovery coverage, saved-context dependency evaluation and Qt display, general calibration coverage, and a supported platform/version matrix remain open.
+
+## 2026-10-12 isolated top-surface flow-ratio model prototype
+
+The separate `codex/top-surface-flow-matrix-20261012` branch introduces a
+**standalone**, versioned `flow_ratio.top_surface_matrix@1` Build123d model,
+with 1–9 identical solid-top coupons, physically embossed A–I underside
+marks, a connected frame and a labeled code plaque. It generates per-object
+`print_flow_ratio` in the first-party Orca 3MF format, preserving imported
+filament source profiles; a JSON sidecar maps each sample's relative object
+multiplier to its intended absolute `filament_flow_ratio`. The geometry and
+3MF writer reject invalid settings and unsupported recipe/module combinations.
+
+Isolated local proof on 2026-10-12: seven original recipe/3MF tests passed
+with pinned CAD; the ten grouped-Orca service tests passed in the same
+CAD-enabled environment. The normal Python environment lacks the CAD extra,
+so its full 331-test sweep reported six failures and two errors primarily
+because ironed geometry could not be built, plus one Qt G-code viewer race;
+it is **not a green full-suite result**. Earlier 12 layout + 12 grouped-3MF
+tests passed without CAD. Actual OrcaSlicer 2.4.2 slicing of the complete
+nine-sample flow plate succeeded and passed shared-layout plus physical-label
+feature-toolpath gates. Relative top-surface extrusion matched the declared
+per-object ratios across nine samples; a separate negative slice with Sample
+A's override deliberately omitted failed flow validation by 4.26%.
+
+This is not yet a saved `flow_ratio` calibration module in the Qt workflow
+and cannot create accepted decisions or export a reviewed filament preset.
+The ad-hoc six-character CLI code is not reserved in SQLite; there is no
+physical print, complete G-code safety preflight, multi-version support
+matrix or machine qualification. All outputs remain `print_ready: false`.
+See `docs/TOP_SURFACE_FLOW_MATRIX.md` and the dated progress entry.
