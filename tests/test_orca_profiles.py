@@ -126,6 +126,41 @@ class OrcaProfileAdapterTests(unittest.TestCase):
         self.assertEqual(loaded.source_sha256, expected_hash)
         self.assertEqual(loaded.documents[0].raw, payload)
 
+    def test_imports_print_type_as_process_and_preserves_raw_type(self):
+        api = self.api()
+        payload = {
+            "type": "print",
+            "name": "General(Slow)",
+            "inherits": "Base Process",
+            "layer_height": "0.12",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "general-slow.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            loaded = api.OrcaProfileAdapter().load(path, scope="user-processes")
+
+        document = loaded.documents[0]
+        self.assertEqual(document.kind, "process")
+        self.assertEqual(document.raw, payload)
+
+    def test_imports_orca_user_profile_without_type_from_its_profile_directory(self):
+        api = self.api()
+        payload = {
+            "name": "RatRig V-Core 3 200 0.4 nozzle - Copy",
+            "inherits": "RatRig V-Core 3 200 0.4 nozzle",
+            "print_host": "Ratos.local",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "user" / "default" / "machine" / "machine-copy.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            loaded = api.OrcaProfileAdapter().load(path, scope="user")
+
+        self.assertEqual(loaded.documents[0].kind, "machine")
+        self.assertEqual(loaded.documents[0].raw, payload)
+
     def test_imports_single_json_profile_with_utf8_bom(self):
         api = self.api()
         payload = {"type": "process", "name": "Fine", "ironing_flow": "10%"}

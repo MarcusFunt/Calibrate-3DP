@@ -255,6 +255,84 @@ class ProfileSelectionServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(AmbiguousProfileError, "multiple scopes"):
             service.resolve("process", "user", "Fine")
 
+    def test_ambiguity_check_follows_same_kind_parent_priority(self):
+        service = ProfileService(config_roots=())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._import(
+                service,
+                root,
+                "machine-base.json",
+                {"type": "machine", "name": "Base", "inherits": "Grand"},
+                scope="user",
+            )
+            self._import(
+                service,
+                root,
+                "printer-base.json",
+                {"type": "printer", "name": "Base", "printer_model": "Preferred"},
+                scope="user",
+            )
+            for scope in ("system-a", "system-b"):
+                self._import(
+                    service,
+                    root,
+                    f"grand-{scope}.json",
+                    {"type": "machine", "name": "Grand", "printer_model": "Fallback"},
+                    scope=scope,
+                )
+            self._import(
+                service,
+                root,
+                "child.json",
+                {"type": "printer", "name": "Child", "inherits": "Base"},
+                scope="user",
+            )
+
+            resolved = service.resolve("printer", "user", "Child")
+
+        self.assertEqual(resolved.settings["printer_model"], "Preferred")
+        self.assertEqual([profile.kind for profile in resolved.chain], ["printer", "printer"])
+
+    def test_ambiguity_check_follows_same_kind_priority_in_parent_scope(self):
+        service = ProfileService(config_roots=())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._import(
+                service,
+                root,
+                "machine-base.json",
+                {"type": "machine", "name": "Base", "inherits": "Grand"},
+                scope="system",
+            )
+            self._import(
+                service,
+                root,
+                "printer-base.json",
+                {"type": "printer", "name": "Base", "printer_model": "Preferred"},
+                scope="system",
+            )
+            for scope in ("system-a", "system-b"):
+                self._import(
+                    service,
+                    root,
+                    f"grand-{scope}.json",
+                    {"type": "machine", "name": "Grand", "printer_model": "Fallback"},
+                    scope=scope,
+                )
+            self._import(
+                service,
+                root,
+                "child.json",
+                {"type": "printer", "name": "Child", "inherits": "Base"},
+                scope="user",
+            )
+
+            resolved = service.resolve("printer", "user", "Child")
+
+        self.assertEqual(resolved.settings["printer_model"], "Preferred")
+        self.assertEqual([profile.kind for profile in resolved.chain], ["printer", "printer"])
+
     def test_effective_values_retain_per_setting_provenance(self):
         service = ProfileService(config_roots=())
         with tempfile.TemporaryDirectory() as directory:

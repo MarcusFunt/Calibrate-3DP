@@ -153,6 +153,7 @@ The current primary checkout is `D:\projects\Calibrate-3DP` on `main` at baselin
 
 - [x] Import local Orca JSON presets and supported ZIP bundles into the profile resolver; save selected printer/material snapshots without writing to Orca directories.
 - [x] Reopen saved printer/material records across app sessions. Explicit replacement/version history for re-imported profiles remains open.
+- [x] Normalize Orca `type: print` as a process profile, infer omitted types from standard preset directories, and resolve `printer`/`machine` inheritance aliases.
 - [ ] Show inheritance, compatibility, missing values, and unknown settings in a dedicated Qt profile review.
 - [ ] Test ambiguous names, parent cycles, deleted source files, renamed files, and changed profile hashes.
 - [ ] Confirm no service writes to Orca's profile directories.

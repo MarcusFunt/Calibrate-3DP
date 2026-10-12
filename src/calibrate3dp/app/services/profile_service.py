@@ -25,6 +25,7 @@ from calibrate3dp.profiles import (
     ProfileDocument,
     ProfileResolutionError,
     ResolvedProfile,
+    profile_inheritance_kinds,
 )
 
 
@@ -454,9 +455,10 @@ class ProfileService:
             parent_name = child.raw.get("inherits")
             if not isinstance(parent_name, str):
                 continue
+            parent_kinds = profile_inheritance_kinds(child.kind)
             same_scope = [
                 document for document in self._documents
-                if document.kind == child.kind
+                if document.kind in parent_kinds
                 and document.scope == child.scope
                 and document.name == parent_name
             ]
@@ -464,7 +466,7 @@ class ProfileService:
                 continue
             parent_scopes = {
                 document.scope for document in self._documents
-                if document.kind == child.kind
+                if document.kind in parent_kinds
                 and document.scope != child.scope
                 and document.name == parent_name
             }
@@ -487,18 +489,24 @@ class ProfileService:
             parent_name = document.raw.get("inherits")
             if not isinstance(parent_name, str):
                 return
-            same_scope = [
-                item for item in self._documents
-                if item.kind == document.kind
-                and item.scope == document.scope
-                and item.name == parent_name
-            ]
+            parent_kinds = profile_inheritance_kinds(document.kind)
+            same_scope = next(
+                (
+                    item
+                    for parent_kind in parent_kinds
+                    for item in self._documents
+                    if item.kind == parent_kind
+                    and item.scope == document.scope
+                    and item.name == parent_name
+                ),
+                None,
+            )
             if same_scope:
-                document = same_scope[0]
+                document = same_scope
                 continue
             candidates = [
                 item for item in self._documents
-                if item.kind == document.kind
+                if item.kind in parent_kinds
                 and item.name == parent_name
                 and item.scope != document.scope
             ]
@@ -514,7 +522,12 @@ class ProfileService:
                 )
             if not candidates:
                 return
-            document = candidates[0]
+            document = next(
+                item
+                for parent_kind in parent_kinds
+                for item in candidates
+                if item.kind == parent_kind
+            )
 
     def _config_roots(self) -> tuple[Path, ...]:
         if self._config_root_overrides is not None:

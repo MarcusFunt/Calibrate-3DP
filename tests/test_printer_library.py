@@ -384,6 +384,123 @@ class LibraryRepositoryTests(unittest.TestCase):
 
 
 class LibraryServiceFreshnessTests(unittest.TestCase):
+    def test_rat_rig_profile_stack_imports_and_roundtrips_as_saved_records(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            orca_root = root / "orca" / "system" / "Ratrig"
+            base_profiles = {
+                "machine": {
+                    "name": "RatRig V-Core 3 200 0.4 nozzle",
+                    "type": "machine",
+                    "printer_model": "RatRig V-Core 3 200",
+                    "nozzle_diameter": ["0.4"],
+                    "printable_area": ["0x0", "200x0", "200x200", "0x200"],
+                },
+                "process": {
+                    "name": "0.20mm Standard @RatRig",
+                    "type": "process",
+                    "layer_height": "0.20",
+                    "travel_speed": "180",
+                },
+                "filament": {
+                    "name": "RatRig Generic PLA",
+                    "type": "filament",
+                    "nozzle_temperature": ["205"],
+                    "filament_type": ["PLA"],
+                },
+            }
+            for kind, payload in base_profiles.items():
+                path = orca_root / kind / f"{payload['name']}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            imported_root = root / "workspace" / "profiles" / "rat-rig-vcore-3-200"
+            imported_root.mkdir(parents=True)
+            printer_path = imported_root / "printer.json"
+            process_path = imported_root / "process.json"
+            filament_path = imported_root / "filament.json"
+            printer_payload = {
+                "name": "RatRig V-Core 3 200 0.4 nozzle - Copy",
+                "type": "printer",
+                "inherits": "RatRig V-Core 3 200 0.4 nozzle",
+                "version": "1.6.4.0",
+                "print_host": "Ratos.local",
+                "print_host_webui": "Ratos.local",
+                "printer_settings_id": "RatRig V-Core 3 200 0.4 nozzle - Copy",
+            }
+            process_payload = {
+                "name": "General(Slow)",
+                "type": "print",
+                "inherits": "0.20mm Standard @RatRig",
+                "layer_height": "0.12",
+                "wall_loops": "5",
+                "travel_speed": "120",
+            }
+            filament_payload = {
+                "name": "Sunlu Black",
+                "type": "filament",
+                "inherits": "RatRig Generic PLA",
+                "nozzle_temperature": "215",
+                "filament_flow_ratio": "0.96",
+                "filament_max_volumetric_speed": "10",
+            }
+            for path, payload in (
+                (printer_path, printer_payload),
+                (process_path, process_payload),
+                (filament_path, filament_payload),
+            ):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            profile_service = ProfileService(config_roots=(root / "orca",))
+            profile_service.discover_profiles()
+            for path in (printer_path, process_path, filament_path):
+                profile_service.import_source(path)
+            library = LibraryService(
+                LibraryRepository(SessionRepository(root / "workspace")), profile_service
+            )
+            printer_choice = next(
+                item for item in profile_service.choices("printer")
+                if item.name == printer_payload["name"]
+            )
+            process_choice = next(
+                item for item in profile_service.choices("process")
+                if item.name == process_payload["name"]
+            )
+            filament_choice = next(
+                item for item in profile_service.choices("filament")
+                if item.name == filament_payload["name"]
+            )
+            printer = library.add_printer(
+                display_name="RatRig V-Core 3 200mm",
+                model="RatRig V-Core 3 200",
+                nozzle="0.4 mm",
+                machine_choice=printer_choice,
+                process_choice=process_choice,
+            )
+            material = library.add_material(
+                display_name="Sunlu Black",
+                nozzle_context="0.4 mm",
+                filament_choice=filament_choice,
+            )
+
+            reloaded_library = LibraryService(
+                LibraryRepository(SessionRepository(root / "workspace")),
+                ProfileService(config_roots=(root / "orca",)),
+            )
+            restored_printer = reloaded_library.repository.get_printer(printer.printer_id)
+            restored_material = reloaded_library.repository.get_material(material.material_id)
+            selection = reloaded_library.resolve_selection(printer.printer_id, material.material_id)
+
+            self.assertEqual(restored_printer.machine_profile.profile.profile.kind, "printer")
+            self.assertEqual(restored_printer.machine_profile.profile.profile.raw["print_host"], "Ratos.local")
+            self.assertEqual(restored_printer.machine_profile.profile.settings["printable_area"], base_profiles["machine"]["printable_area"])
+            self.assertEqual(restored_printer.process_profile.profile.profile.kind, "process")
+            self.assertEqual(restored_printer.process_profile.profile.profile.raw["type"], "print")
+            self.assertEqual(restored_printer.process_profile.profile.settings["travel_speed"], "120")
+            self.assertEqual(restored_material.filament_profile.profile.settings["filament_flow_ratio"], "0.96")
+            self.assertEqual(selection.printer.profile.name, printer_payload["name"])
+            self.assertEqual(reloaded_library.current_source_hashes(selection), dict(selection.source_hashes))
+
     def test_manual_import_and_inherited_sources_are_rechecked_after_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

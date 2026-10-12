@@ -46,6 +46,20 @@ class InheritanceCycleError(ProfileResolutionError):
     """Raised when profile inheritance loops back to an earlier profile."""
 
 
+def canonical_profile_kind(kind: Any) -> Any:
+    """Normalize Orca role labels that represent the same profile family."""
+    return "process" if kind == "print" else kind
+
+
+def profile_inheritance_kinds(kind: str) -> tuple[str, ...]:
+    """Return parent kinds in priority order for the selected profile family."""
+    if kind == "machine":
+        return ("machine", "printer")
+    if kind == "printer":
+        return ("printer", "machine")
+    return (kind,)
+
+
 @dataclass(frozen=True)
 class ProfileDocument:
     """A raw preset plus the source context needed to resolve its parent."""
@@ -74,7 +88,10 @@ class ProfileDocument:
             raise ProfileResolutionError(
                 f"profile identity name {self.name!r} does not match raw name {raw['name']!r}"
             )
-        if raw.get("type") not in (None, self.kind):
+        if (
+            raw.get("type") is not None
+            and canonical_profile_kind(raw.get("type")) != self.kind
+        ):
             raise ProfileResolutionError(
                 f"profile identity kind {self.kind!r} does not match raw type {raw['type']!r}"
             )
@@ -84,7 +101,13 @@ class ProfileDocument:
         object.__setattr__(self, "raw", raw)
 
     @classmethod
-    def from_json_file(cls, path: str | Path, *, scope: str) -> "ProfileDocument":
+    def from_json_file(
+        cls,
+        path: str | Path,
+        *,
+        scope: str,
+        kind_hint: str | None = None,
+    ) -> "ProfileDocument":
         """Load one Orca-style preset JSON without discarding unrecognized keys."""
         source_path = Path(path)
         try:
@@ -108,10 +131,14 @@ class ProfileDocument:
             raise InvalidProfileDocumentError(
                 f"profile JSON {source_path} must contain a non-empty string 'name'"
             )
+        if "type" not in payload:
+            kind = kind_hint
         if not isinstance(kind, str) or not kind.strip():
             raise InvalidProfileDocumentError(
-                f"profile JSON {source_path} must contain a non-empty string 'type'"
+                f"profile JSON {source_path} must contain a non-empty string 'type' "
+                "or be loaded from a recognized Orca profile directory"
             )
+        kind = canonical_profile_kind(kind)
         try:
             return cls(
                 name=name,
@@ -216,19 +243,20 @@ class ProfileCatalog:
     def _find_parent(self, child: ProfileDocument, parent_name: str) -> ProfileDocument:
         scopes = list(dict.fromkeys((child.scope, *self._parent_scopes.get(child.scope, ()))))
         for scope in scopes:
-            candidates = [
-                document
-                for document in self._documents.values()
-                if document.kind == child.kind
-                and document.scope == scope
-                and document.name == parent_name
-            ]
-            if len(candidates) > 1:
-                raise AmbiguousProfileError(
-                    f"parent {parent_name!r} for {child.name!r} is ambiguous in scope {scope!r}"
-                )
-            if candidates:
-                return candidates[0]
+            for parent_kind in profile_inheritance_kinds(child.kind):
+                candidates = [
+                    document
+                    for document in self._documents.values()
+                    if document.kind == parent_kind
+                    and document.scope == scope
+                    and document.name == parent_name
+                ]
+                if len(candidates) > 1:
+                    raise AmbiguousProfileError(
+                        f"parent {parent_name!r} for {child.name!r} is ambiguous in scope {scope!r}"
+                    )
+                if candidates:
+                    return candidates[0]
         searched = ", ".join(scopes)
         raise MissingParentError(
             f"parent {parent_name!r} for {child.kind!r}/{child.scope!r}/{child.name!r} "

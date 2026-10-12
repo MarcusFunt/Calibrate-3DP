@@ -136,6 +136,41 @@ class ProfileResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(api.MissingParentError, "Base"):
             api.ProfileCatalog([filament, process]).resolve("process", "vendor", "Child")
 
+    def test_printer_profile_can_inherit_machine_parent_across_scopes(self):
+        api = self.api()
+        system_machine = self.doc(
+            api,
+            "RatRig V-Core 3 200 0.4 nozzle",
+            {
+                "type": "machine",
+                "name": "RatRig V-Core 3 200 0.4 nozzle",
+                "printable_area": ["0x0", "200x0", "200x200", "0x200"],
+            },
+            scope="system",
+            kind="machine",
+        )
+        user_printer = self.doc(
+            api,
+            "RatRig V-Core 3 200 0.4 nozzle - Copy",
+            {
+                "type": "printer",
+                "name": "RatRig V-Core 3 200 0.4 nozzle - Copy",
+                "inherits": "RatRig V-Core 3 200 0.4 nozzle",
+                "print_host": "Ratos.local",
+            },
+            scope="user",
+            kind="printer",
+        )
+
+        resolved = api.ProfileCatalog(
+            [system_machine, user_printer], parent_scopes={"user": ("system",)}
+        ).resolve("printer", "user", user_printer.name)
+
+        self.assertEqual(resolved.settings["printable_area"], ["0x0", "200x0", "200x200", "0x200"])
+        self.assertEqual(resolved.provenance["printable_area"].name, system_machine.name)
+        self.assertEqual([item.name for item in resolved.chain], [system_machine.name, user_printer.name])
+        self.assertEqual(user_printer.raw["type"], "printer")
+
     def test_non_unique_selected_profile_name_is_reported(self):
         api = self.api()
         left = self.doc(api, "Quality", {"type": "process", "name": "Quality"}, scope="vendor-a")

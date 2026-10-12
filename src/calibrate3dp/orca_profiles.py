@@ -23,6 +23,7 @@ from calibrate3dp.profiles import (
     ProfileDocument,
     ProfileResolutionError,
     ResolvedProfile,
+    canonical_profile_kind,
     clone_profile_with_patch,
 )
 
@@ -60,7 +61,7 @@ class OrcaProfileAdapter:
         ".orca_filaments",
         ".orca_bundle",
     })
-    profile_kinds = frozenset({"machine", "printer", "filament", "process"})
+    profile_kinds = frozenset({"machine", "printer", "filament", "process", "print"})
     profile_directories = frozenset({"machine", "printer", "filament", "process"})
     max_source_bytes = 64 * 1024 * 1024
     max_archive_entries = 4096
@@ -85,7 +86,11 @@ class OrcaProfileAdapter:
         suffix = source_path.suffix.lower()
         if suffix in self.json_suffixes:
             try:
-                document = ProfileDocument.from_json_file(source_path, scope=scope)
+                document = ProfileDocument.from_json_file(
+                    source_path,
+                    scope=scope,
+                    kind_hint=self._kind_from_profile_path(source_path),
+                )
             except (InvalidProfileDocumentError, UnicodeDecodeError) as exc:
                 raise InvalidProfileBundleError(str(exc)) from exc
             if document.kind not in self.profile_kinds:
@@ -187,6 +192,10 @@ class OrcaProfileAdapter:
                     )
                 continue
             kind = payload.get("type")
+            if "type" not in payload:
+                kind = self._kind_from_profile_path(entry.filename)
+            else:
+                kind = canonical_profile_kind(kind)
             if not isinstance(kind, str) or kind not in self.profile_kinds:
                 if self._is_profile_path(entry.filename):
                     raise InvalidProfileBundleError(
@@ -243,6 +252,22 @@ class OrcaProfileAdapter:
     def _is_profile_path(cls, filename: str) -> bool:
         parts = PurePosixPath(filename.replace("\\", "/")).parts
         return any(part.casefold() in cls.profile_directories for part in parts[:-1])
+
+    @classmethod
+    def _kind_from_profile_path(cls, filename: str | Path) -> str | None:
+        parts = (
+            Path(filename).parts
+            if isinstance(filename, Path)
+            else PurePosixPath(str(filename).replace("\\", "/")).parts
+        )
+        return next(
+            (
+                part.casefold()
+                for part in reversed(parts[:-1])
+                if part.casefold() in cls.profile_directories
+            ),
+            None,
+        )
 
     @staticmethod
     def _validate_member_name(filename: str) -> None:
