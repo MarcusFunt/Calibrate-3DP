@@ -19,4 +19,9 @@ calibrate3dp = "calibrate3dp.app.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-calibrate3dp = ["assets/fonts/*.ttf", "assets/fonts/*.txt"]
+calibrate3dp = [
+    "assets/fonts/*.ttf",
+    "assets/fonts/*.txt",
+    "assets/gcode_viewer/*",
+    "assets/gcode_viewer/assets/*",
+]

@@ -1,0 +1,106 @@
+name: Windows development application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-development-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build untrusted Windows x64 app
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            packaging/windows/requirements.txt
+
+      - name: Install app, CAD, and packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui,cad]" -r packaging/windows/requirements.txt
+
+      - name: Run the project test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+      - name: Build the onedir application
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          $pythonDirectory = Split-Path -Parent $python
+          $env:PATH = @(
+            $pythonDirectory,
+            (Join-Path $pythonDirectory 'Scripts'),
+            (Join-Path $env:SystemRoot 'System32'),
+            $env:SystemRoot
+          ) -join ';'
+          & $python -m PyInstaller --noconfirm --clean --onedir --windowed `
+            --name Calibrate-3DP --paths src `
+            --add-data 'src/calibrate3dp/assets/fonts;calibrate3dp/assets/fonts' `
+            --add-data 'src/calibrate3dp/assets/gcode_viewer;calibrate3dp/assets/gcode_viewer' `
+            --collect-all build123d --collect-all OCP `
+            --copy-metadata build123d --copy-metadata cadquery-ocp-novtk `
+            --hidden-import PySide6.QtWebEngineCore `
+            --hidden-import PySide6.QtWebEngineWidgets `
+            packaging/windows/entry.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Create warned ZIP and checksum
+        run: >-
+          python tools/package_windows_app.py
+          --distribution dist/Calibrate-3DP
+          --artifact-directory artifacts
+          --build-id ${{ github.run_id }}-attempt-${{ github.run_attempt }}
+
+      - name: Smoke-check the packaged application
+        shell: pwsh
+        run: |
+          $env:CALIBRATE3DP_BUNDLE_SELF_CHECK_LOG = Join-Path $env:RUNNER_TEMP 'calibrate3dp-self-check.log'
+          $process = Start-Process -FilePath '.\dist\Calibrate-3DP\Calibrate-3DP.exe' -ArgumentList '--bundle-self-check' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $env:CALIBRATE3DP_BUNDLE_SELF_CHECK_LOG) {
+              Get-Content -LiteralPath $env:CALIBRATE3DP_BUNDLE_SELF_CHECK_LOG
+            }
+            throw "Packaged application self-check failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Upload downloadable development build
+        uses: actions/upload-artifact@v7
+        with:
+          name: Calibrate-3DP-Windows-x64-DEVELOPMENT-ONLY-${{ github.run_number }}-attempt-${{ github.run_attempt }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: State development warning in the workflow summary
+        shell: pwsh
+        run: |
+          @'
+          ## DEVELOPMENT BUILD — NOT TRUSTWORTHY YET
+
+          Calibrate-3DP is still in development. Do not rely on this application for calibration decisions, printer safety, print readiness, or deciding what to print. The uploaded files are experimental and are not approved for production use.
+
+          Download the Windows x64 ZIP and its SHA-256 file from this run's Artifacts section. This build requires OrcaSlicer to be installed separately.
+          '@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

@@ -1,0 +1,101 @@
+Calibrate-3DP G-code preview — bundled software notices
+========================================================
+
+The G-code preview bundle is shipped as local static assets with Calibrate-3DP. These notices accompany the bundle at runtime. Chestnut Labs' parser and renderers process the selected artifact on this computer; Calibrate-3DP does not load the hosted demo or send a file to a service.
+
+Bundled software
+----------------
+
+1. Chestnut Labs G-code Preview, version 0.20.1
+   Packages in the viewer dependency set: @chestnutlabs/gcode-preview-vue,
+   @chestnutlabs/gcode-parser, @chestnutlabs/gcode-containers,
+   @chestnutlabs/gcode-dialects, @chestnutlabs/gcode-bgcode,
+   @chestnutlabs/gcode-preview-core, @chestnutlabs/gcode-renderer-three,
+   @chestnutlabs/gcode-renderer-2d, @chestnutlabs/gcode-colors,
+   @chestnutlabs/gcode-model-renderer, and @chestnutlabs/toolpath-core.
+   License: MIT. Source: https://github.com/ChestnutLabs/gcode-preview
+   The upstream NOTICE identifies inherited code as Copyright (c) 2017-2025
+   Remco Veldkamp and the xyz-tools/gcode-preview contributors, and Chestnut
+   Labs additions/modifications as Copyright (c) 2026 Chestnut Labs.
+
+2. Three.js, version 0.178.0
+   License: MIT. Source: https://github.com/mrdoob/three.js
+   Copyright © 2010-2025 three.js authors.
+
+3. Vue.js, version 3.5.43, including its runtime packages
+   License: MIT. Source: https://github.com/vuejs/core
+   Copyright (c) 2018-present, Yuxi (Evan) You.
+
+Build-only tools include Vite 8.3.4 and @vitejs/plugin-vue 6.0.10; their
+code is not shipped in the desktop bundle. The versioned lockfile is at
+frontend/gcode-viewer/package-lock.json.
+
+MIT License
+-----------
+
+Copyright (c) 2017-2025 Remco Veldkamp and the xyz-tools/gcode-preview contributors.
+Copyright (c) 2026 Chestnut Labs.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The following MIT notices are retained for the additional bundled libraries:
+
+The MIT License (MIT)
+
+Copyright (c) 2018-present, Yuxi (Evan) You
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+The MIT License
+
+Copyright © 2010-2025 three.js authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

@@ -1,0 +1,12 @@
+CALIBRATE-3DP WINDOWS DEVELOPMENT BUILD
+
+CALIBRATE-3DP IS STILL IN DEVELOPMENT AND NOT TRUSTWORTHY YET.
+
+Do not rely on this software for calibration decisions, printer safety,
+print readiness, or decisions about what to print. Its recommendations,
+dependency and stale-result status, geometry, and exported G-code are
+experimental and may be wrong. Verify every result independently in
+OrcaSlicer and against your printer and material documentation.
+
+This application does not certify a printer, profile, plate, or G-code file
+as safe or ready to print. Use this build only for development evaluation.

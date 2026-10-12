@@ -13,7 +13,7 @@ The app should make calibration reproducible: a printed plate can be identified 
 3. Open that printer's calibration workspace. See prior calibration results and the dependency graph, with untested, ready, blocked, in-progress, accepted, and stale states.
 4. Choose a calibration that is ready, review its assumptions and fixed settings, then generate a structured experiment.
 5. Review the exact candidate settings and plate layout before slicing. The app assigns each physical plate a unique six-character code and each sample a short label, initially A through I for a nine-sample layout.
-6. Generate the project and G-code through OrcaSlicer. Validate the output against the planned sample settings and retain the effective profiles, application and slicer versions, logs, commands, and artifact hashes.
+6. Generate the project and G-code through OrcaSlicer. Validate the output against the planned sample settings and retain the effective profiles, application and slicer versions, logs, commands, and artifact hashes. Use the local in-app viewer for visual toolpath inspection; it is not a print-safety validator.
 7. Print using the user's normal printer workflow. The app does not send the job to the printer.
 8. Enter manual observations for each sample. Record acceptance, defects, notes, and the selected candidate. The app proposes a follow-up experiment and explains which earlier results remain applicable.
 9. Review a profile diff and export a new Orca-compatible profile or bundle. The app never changes the source profile in place.
@@ -80,3 +80,4 @@ V1 is complete when all of the following pass on the declared supported platform
 8. The application can be closed and reopened without losing printer records, sessions, results, artifacts, or code lookup.
 9. Profile export shows the source and destination values, provenance, supporting result, and compatibility status before writing a new profile.
 10. Automated tests pass, real-Orca integration evidence is recorded for each supported matrix entry, and the progress history records commands, outcomes, decisions, and assumptions.
+11. A user can inspect saved `.gcode` and sliced `.gcode.3mf` artifacts in the local viewer. The upstream parser and renderer run from bundled assets, and viewing a file never changes the run's validation or print-readiness state.

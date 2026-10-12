@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from calibrate3dp.geometry.layout import PlateLayoutRequest, PlateSampleRequest
 from calibrate3dp.geometry.specimens import PlateGeometryBackend
+from calibrate3dp import grouped_plate
 
 from calibrate3dp.grouped_plate import (
     GroupedPlateError,
@@ -60,6 +61,23 @@ def _gcode(plan, *, wrong_speed: str | None = None):
             f"; stop printing object {label} id:1 copy 0",
         ))
     return "\n".join(lines), expected
+
+
+def _assert_orca_model_mapping(testcase, model, config):
+    model_objects = model.findall(f".//{{{_CORE}}}resources/{{{_CORE}}}object")
+    object_ids = [item.get("id") for item in model_objects]
+    build_ids = [item.get("objectid") for item in model.findall(f".//{{{_CORE}}}build/{{{_CORE}}}item")]
+    config_objects = config.findall("object")
+    config_ids = [item.get("id") for item in config_objects]
+    testcase.assertEqual(len(object_ids), len(set(object_ids)))
+    testcase.assertCountEqual(build_ids, object_ids)
+    testcase.assertEqual(config_ids, object_ids)
+    testcase.assertEqual(config.findall("plate"), [])
+    testcase.assertEqual(config.findall("assemble"), [])
+    for object_id, item in zip(object_ids, config_objects, strict=True):
+        part = item.find("part")
+        testcase.assertIsNotNone(part)
+        testcase.assertEqual(part.get("id"), object_id)
 
 
 class GroupedPlate3MFTests(unittest.TestCase):
@@ -167,6 +185,115 @@ class GroupedPlate3MFTests(unittest.TestCase):
         self.assertTrue(manifest["physical_plate_code_in_mesh"])
         self.assertEqual(manifest["geometry"]["backend_id"], "stdlib-voxel")
         self.assertEqual(len(manifest["samples"]), 9)
+
+    def test_sample_export_contains_only_the_selected_watertight_object(self):
+        plan = _plan()
+        samples = tuple(
+            PlateSampleRequest(label, candidate.candidate_id, candidate.overrides)
+            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+        )
+        geometry = PlateGeometryBackend().build(PlateLayoutRequest(
+            samples=samples,
+            plate_code="7K3P9D",
+            printable_polygon=((0, 0), (220, 0), (220, 220), (0, 220)),
+        ))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = write_plate_geometry_3mf(
+                geometry,
+                destination=root / "plate.3mf",
+                module_id="ironing",
+                plan_id=plan.plan_id,
+            )
+            sample_writer = getattr(grouped_plate, "write_sample_3mf_from_plate", None)
+            self.assertTrue(callable(sample_writer), "single-sample 3MF export is not available")
+            output = sample_writer(
+                source,
+                destination=root / "sample-a.3mf",
+                run_id="run-test",
+                plate_code="7K3P9D",
+                sample_label="A",
+                candidate_id=plan.candidates[0].candidate_id,
+                settings=plan.candidates[0].overrides,
+            )
+
+            with zipfile.ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
+                model = ET.fromstring(archive.read("3D/3dmodel.model"))
+                config = ET.fromstring(archive.read("Metadata/model_settings.config"))
+                manifest = __import__("json").loads(
+                    archive.read("Metadata/calibrate3dp-sample.json")
+                )
+
+        objects = model.findall(f".//{{{_CORE}}}resources/{{{_CORE}}}object")
+        self.assertEqual([(item.attrib["id"], item.attrib["name"]) for item in objects], [("1", "Sample-A")])
+        items = model.findall(f".//{{{_CORE}}}build/{{{_CORE}}}item")
+        self.assertEqual([item.attrib["objectid"] for item in items], ["1"])
+        vertices = model.findall(f".//{{{_CORE}}}vertex")
+        self.assertTrue(vertices)
+        self.assertEqual(min(float(item.attrib["x"]) for item in vertices), 0.0)
+        self.assertEqual(min(float(item.attrib["y"]) for item in vertices), 0.0)
+        self.assertEqual(min(float(item.attrib["z"]) for item in vertices), 0.0)
+        config_objects = config.findall("object")
+        self.assertEqual([item.attrib["id"] for item in config_objects], ["1"])
+        part = config_objects[0].find("part")
+        self.assertEqual(part.attrib["id"], "1")
+        self.assertEqual(
+            {item.attrib["key"]: item.attrib["value"] for item in part.findall("metadata")},
+            {"ironing_flow": "12%", "ironing_speed": "10"},
+        )
+        self.assertEqual(manifest["sample_label"], "A")
+        self.assertEqual(manifest["candidate_id"], plan.candidates[0].candidate_id)
+        self.assertFalse(manifest["frame_included"])
+        self.assertFalse(manifest["identifier_plaque_included"])
+        self.assertFalse(manifest["print_ready"])
+
+    def test_all_3mf_writers_emit_orca_importable_model_packages(self):
+        plan = _plan()
+        samples = tuple(
+            PlateSampleRequest(label, candidate.candidate_id, candidate.overrides)
+            for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
+        )
+        geometry = PlateGeometryBackend().build(PlateLayoutRequest(
+            samples=samples,
+            plate_code="7K3P9D",
+            printable_polygon=((0, 0), (220, 0), (220, 220), (0, 220)),
+        ))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            simple_path = write_grouped_plate_3mf(
+                plan, plate_code="7K3P9D", destination=root / "simple.3mf"
+            )
+            geometry_path = write_plate_geometry_3mf(
+                geometry,
+                destination=root / "geometry.3mf",
+                module_id="ironing",
+                plan_id=plan.plan_id,
+            )
+            sample_path = grouped_plate.write_sample_3mf_from_plate(
+                geometry_path,
+                destination=root / "sample-a.3mf",
+                run_id="run-test",
+                plate_code="7K3P9D",
+                sample_label="A",
+                candidate_id=plan.candidates[0].candidate_id,
+                settings=plan.candidates[0].overrides,
+            )
+            for path in (simple_path, geometry_path, sample_path):
+                with zipfile.ZipFile(path) as archive:
+                    names = set(archive.namelist())
+                    self.assertIn("[Content_Types].xml", names)
+                    self.assertIn("_rels/.rels", names)
+                    self.assertIn("3D/3dmodel.model", names)
+                    self.assertIn("Metadata/model_settings.config", names)
+                    self.assertNotIn("Metadata/project_settings.config", names)
+                    relationships = ET.fromstring(archive.read("_rels/.rels"))
+                    targets = [item.get("Target") for item in relationships]
+                    self.assertEqual(targets, ["/3D/3dmodel.model"])
+                    model = ET.fromstring(archive.read("3D/3dmodel.model"))
+                    config = ET.fromstring(archive.read("Metadata/model_settings.config"))
+                with self.subTest(path=path.name):
+                    _assert_orca_model_mapping(self, model, config)
 
 
 class GroupedGcodeValidationTests(unittest.TestCase):

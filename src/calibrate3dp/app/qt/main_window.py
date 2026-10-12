@@ -259,7 +259,7 @@ class PrinterLibraryPage(QWidget):
         self.list_layout.setContentsMargins(0, 0, 0, 0)
         self.list_layout.setSpacing(8)
         self.empty_state = QLabel("No saved printers yet. Import a printer profile to get started.")
-        self.empty_state.setObjectName("mutedStatus")
+        self.empty_state.setObjectName("emptyState")
         self.empty_state.setWordWrap(True)
         self.list_layout.addWidget(self.empty_state)
         self.retry_button = QPushButton("Retry")
@@ -358,7 +358,7 @@ class PrinterLibraryPage(QWidget):
                 )
                 self.retry_button.hide()
             self.empty_state = QLabel(message)
-            self.empty_state.setObjectName("mutedStatus")
+            self.empty_state.setObjectName("emptyState")
             self.empty_state.setWordWrap(True)
             self.list_layout.addWidget(self.empty_state)
         else:
@@ -460,10 +460,17 @@ class MainWindow(QMainWindow):
             calibration_state_service=shared_calibration_state,
         )
         self.workspace_page.add_material_requested.connect(self._add_material)
+        self.workspace_page.settings_requested.connect(
+            lambda: self.navigate_to(AppPage.SETTINGS)
+        )
+        self.workspace_page.printer_library_requested.connect(
+            lambda: self.navigate_to(AppPage.PRINTER_LIBRARY)
+        )
         self.workspace_page.run_finished.connect(self._refresh_history)
         self._add_page(AppPage.PRINTER_WORKSPACE, self.workspace_page)
         new_calibration = NewCalibrationPage()
         new_calibration.open_printer_library.connect(self._open_selected_for_calibration)
+        self.new_calibration_page = new_calibration
         self._add_page(AppPage.NEW_CALIBRATION, new_calibration)
         self.history_page = RunHistoryPage(library_service, generation_service=generation_service)
         self._add_page(AppPage.RUNS_HISTORY, self.history_page)
@@ -522,6 +529,19 @@ class MainWindow(QMainWindow):
         self._sync_header_context()
 
         root.addWidget(self.header)
+        self.development_warning_banner = QLabel(
+            "CALIBRATE-3DP IS STILL IN DEVELOPMENT AND NOT TRUSTWORTHY YET. "
+            "Do not rely on this software for calibration decisions, print-readiness, "
+            "or machine-safety decisions."
+        )
+        self.development_warning_banner.setObjectName("developmentWarningBanner")
+        self.development_warning_banner.setWordWrap(True)
+        self.development_warning_banner.setAccessibleName(
+            "Development warning. Calibrate-3DP is still in development and not "
+            "trustworthy yet. Do not rely on it for calibration, print readiness, "
+            "or machine safety decisions."
+        )
+        root.addWidget(self.development_warning_banner)
         root.addWidget(self.navigation)
         root.addWidget(self.pages, 1)
         self.setCentralWidget(canvas)
@@ -534,6 +554,8 @@ class MainWindow(QMainWindow):
     def navigate_to(self, page: AppPage) -> None:
         if page not in self.page_widgets:
             raise ValueError(f"unknown application page: {page!r}")
+        if page is AppPage.NEW_CALIBRATION:
+            self._sync_header_context()
         self._current_page = page
         self.pages.setCurrentWidget(self.page_widgets[page])
         self.navigation.set_current_page(page)
@@ -546,6 +568,9 @@ class MainWindow(QMainWindow):
 
     def _sync_header_context(self) -> None:
         printer = self.view_model.selected_printer
+        self.new_calibration_page.set_printer_context(
+            printer.name if printer is not None else None
+        )
         self.printer_context_value.setText(
             printer.name if printer is not None else "Choose a printer"
         )

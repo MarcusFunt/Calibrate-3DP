@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import copy
+import hashlib
+import json
 import math
+import os
 from pathlib import Path
 import re
+import tempfile
 from types import MappingProxyType
 import zipfile
 import xml.etree.ElementTree as ET
@@ -18,7 +23,7 @@ from typing import Any, Mapping
 
 from calibrate3dp.experiments import ExperimentPlan
 from calibrate3dp.geometry.layout import PlateLayoutError, require_layout_fits_printable_area
-from calibrate3dp.geometry.contracts import GeometryValidation, PlateGeometry
+from calibrate3dp.geometry.contracts import GeometryValidation, PlateGeometry, Point3, TriangleMesh
 from calibrate3dp.geometry.registry import GeometryBackendUnavailable, get_geometry_backend
 
 
@@ -147,6 +152,7 @@ def write_grouped_plate_3mf(
 
     The object ID and nested model-settings part ID are intentionally identical:
     real Orca 2.3.0 applied overrides only when that resource mapping matched.
+    This is a generic 3MF model for slicer import, not an Orca-saved project;
     ``omitted_candidate_ids`` exists for negative integration fixtures.
     """
     if not isinstance(plan, ExperimentPlan) or plan.module_id != "ironing":
@@ -256,12 +262,13 @@ def write_plate_geometry_3mf(
     plan_id: str,
     omitted_candidate_ids: set[str] | frozenset[str] = frozenset(),
 ) -> Path:
-    """Package connected mesh objects while preserving Orca per-sample IDs.
+    """Package connected mesh objects as a generic 3MF model for slicer import.
 
     Mesh vertices use plate coordinates and each 3MF build item has an identity
     transform. Each sample object ID matches its model-settings object and part
     ID; frame and connector geometry stays in a separate object without sample
-    ironing overrides.
+    ironing overrides. The package does not snapshot Orca printer/material
+    profiles or use Orca-authored project plate metadata.
     """
     if not isinstance(geometry, PlateGeometry) or not _validate_geometry_backend(geometry).valid:
         raise GroupedPlateError("connected plate geometry must pass backend validation")
@@ -367,6 +374,268 @@ def write_plate_geometry_3mf(
     return destination_path
 
 
+def write_sample_3mf_from_plate(
+    source: str | Path,
+    *,
+    destination: str | Path,
+    run_id: str,
+    plate_code: str,
+    sample_label: str,
+    candidate_id: str,
+    settings: Mapping[str, Any],
+    overwrite: bool = False,
+) -> Path:
+    """Write one normalized sample mesh from an immutable grouped plate 3MF.
+
+    The core 3MF contains only the selected sample. Its frame and identifier
+    plaque are omitted; the sample's own geometry, label, Orca-compatible
+    ironing overrides, and provenance remain available to slicers that support
+    those extensions. Global printer/material profiles and Orca-authored project
+    metadata are not included.
+    """
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise GroupedPlateError("run_id must be non-empty text")
+    if not isinstance(plate_code, str) or not re.fullmatch(r"[A-Z0-9]{6}", plate_code):
+        raise GroupedPlateError("plate_code must contain exactly six uppercase letters or digits")
+    if not isinstance(sample_label, str) or sample_label not in "ABCDEFGHI":
+        raise GroupedPlateError("sample_label must be one uppercase letter from A through I")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise GroupedPlateError("candidate_id must be non-empty text")
+    if not isinstance(settings, Mapping):
+        raise GroupedPlateError("sample settings must be a mapping")
+    if not isinstance(overwrite, bool):
+        raise GroupedPlateError("overwrite must be a boolean")
+    try:
+        settings_snapshot = json.loads(json.dumps(dict(settings), sort_keys=True, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise GroupedPlateError(f"sample settings must be finite JSON values: {exc}") from exc
+
+    source_path = Path(source).expanduser().resolve(strict=False)
+    destination_path = Path(destination).expanduser().resolve(strict=False)
+    if source_path == destination_path:
+        raise GroupedPlateError("sample export destination must differ from the saved plate 3MF")
+    if destination_path.suffix.casefold() != ".3mf":
+        raise GroupedPlateError("sample export destination must use the .3mf extension")
+    if destination_path.exists() and not overwrite:
+        raise GroupedPlateError(f"sample export destination already exists: {destination_path}")
+
+    try:
+        source_sha256 = _sha256_path(source_path)
+        with zipfile.ZipFile(source_path, "r") as archive:
+            corrupt_member = archive.testzip()
+            if corrupt_member is not None:
+                raise GroupedPlateError(f"saved plate 3MF contains a corrupt member: {corrupt_member}")
+            package_manifest = json.loads(archive.read("Metadata/calibrate3dp-run.json"))
+            model_root = ET.fromstring(archive.read("3D/3dmodel.model"))
+            settings_bytes = (
+                archive.read("Metadata/model_settings.config")
+                if "Metadata/model_settings.config" in archive.namelist()
+                else None
+            )
+    except GroupedPlateError:
+        raise
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError, json.JSONDecodeError) as exc:
+        raise GroupedPlateError(f"saved plate 3MF could not be read: {exc}") from exc
+
+    if not isinstance(package_manifest, dict) or package_manifest.get("plate_code") != plate_code:
+        raise GroupedPlateError("saved plate 3MF does not match the run's plate code")
+    entries = package_manifest.get("samples")
+    if not isinstance(entries, list):
+        raise GroupedPlateError("saved plate 3MF has no sample manifest")
+    expected_name = f"Sample-{sample_label}"
+    matches = [
+        item for item in entries
+        if isinstance(item, dict) and item.get("candidate_id") == candidate_id
+    ]
+    if len(matches) != 1:
+        raise GroupedPlateError("candidate does not identify exactly one sample in the saved plate 3MF")
+    sample_entry = matches[0]
+    if sample_entry.get("label") != expected_name:
+        raise GroupedPlateError("candidate-to-sample label does not match the saved plate 3MF")
+    if sample_entry.get("settings") != settings_snapshot:
+        raise GroupedPlateError("sample settings do not match the saved plate 3MF")
+
+    q = lambda name: f"{{{_CORE_NS}}}{name}"
+    if model_root.tag != q("model"):
+        raise GroupedPlateError("saved plate 3MF has an unsupported model namespace")
+    resources = model_root.find(q("resources"))
+    build = model_root.find(q("build"))
+    if resources is None or build is None:
+        raise GroupedPlateError("saved plate 3MF has no resources or build section")
+    source_id = sample_entry.get("object_id")
+    model_objects = resources.findall(q("object"))
+    selected = next(
+        (item for item in model_objects if source_id is not None and item.get("id") == str(source_id)),
+        None,
+    )
+    if selected is None:
+        selected = next((item for item in model_objects if item.get("name") == expected_name), None)
+    if selected is None or selected.get("name") != expected_name:
+        raise GroupedPlateError(f"saved plate 3MF has no object named {expected_name}")
+    source_id = selected.get("id")
+    build_items = [item for item in build.findall(q("item")) if item.get("objectid") == source_id]
+    if len(build_items) != 1:
+        raise GroupedPlateError(f"saved plate 3MF must build {expected_name} exactly once")
+
+    mesh_elements = selected.findall(q("mesh"))
+    if len(mesh_elements) != 1:
+        raise GroupedPlateError(f"{expected_name} must contain exactly one triangle mesh")
+    mesh_element = mesh_elements[0]
+    vertex_element = mesh_element.find(q("vertices"))
+    triangle_element = mesh_element.find(q("triangles"))
+    if vertex_element is None or triangle_element is None:
+        raise GroupedPlateError(f"{expected_name} mesh is incomplete")
+    try:
+        vertices = tuple(
+            Point3(float(item.get("x", "nan")), float(item.get("y", "nan")), float(item.get("z", "nan")))
+            for item in vertex_element.findall(q("vertex"))
+        )
+        triangles = tuple(
+            (int(item.get("v1", "-1")), int(item.get("v2", "-1")), int(item.get("v3", "-1")))
+            for item in triangle_element.findall(q("triangle"))
+        )
+        transform_text = build_items[0].get("transform")
+        transform = (
+            tuple(float(item) for item in transform_text.split())
+            if transform_text is not None
+            else (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        )
+    except (TypeError, ValueError) as exc:
+        raise GroupedPlateError(f"{expected_name} mesh or build transform is malformed") from exc
+    identity = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    if len(transform) != 12 or any(abs(left - right) > 1e-9 for left, right in zip(transform[:9], identity, strict=True)):
+        raise GroupedPlateError(f"{expected_name} uses an unsupported non-translation build transform")
+    if not vertices or not triangles:
+        raise GroupedPlateError(f"{expected_name} mesh is empty")
+    translated = tuple(
+        Point3(point.x + transform[9], point.y + transform[10], point.z + transform[11])
+        for point in vertices
+    )
+    min_x = min(item.x for item in translated)
+    min_y = min(item.y for item in translated)
+    min_z = min(item.z for item in translated)
+    standalone_mesh = TriangleMesh(
+        tuple(Point3(point.x - min_x, point.y - min_y, point.z - min_z) for point in translated),
+        triangles,
+    )
+    if not standalone_mesh.is_watertight():
+        raise GroupedPlateError(f"{expected_name} mesh is not a valid watertight sample")
+
+    ET.register_namespace("", _CORE_NS)
+    standalone_model = ET.Element(model_root.tag, dict(model_root.attrib))
+    for metadata in model_root.findall(q("metadata")):
+        standalone_model.append(copy.deepcopy(metadata))
+    standalone_resources = ET.SubElement(standalone_model, q("resources"))
+    standalone_object = copy.deepcopy(selected)
+    standalone_object.set("id", "1")
+    standalone_object.set("name", expected_name)
+    standalone_vertices = standalone_object.find(f"{q('mesh')}/{q('vertices')}")
+    for element, point in zip(standalone_vertices.findall(q("vertex")), standalone_mesh.vertices, strict=True):
+        element.set("x", f"{point.x:.9g}")
+        element.set("y", f"{point.y:.9g}")
+        element.set("z", f"{point.z:.9g}")
+    standalone_resources.append(standalone_object)
+    standalone_build = ET.SubElement(standalone_model, q("build"))
+    ET.SubElement(standalone_build, q("item"), {
+        "objectid": "1",
+        "transform": "1 0 0 0 1 0 0 0 1 0 0 0",
+    })
+    model_bytes = ET.tostring(standalone_model, encoding="utf-8", xml_declaration=True)
+
+    config_bytes = None
+    if settings_bytes is not None:
+        try:
+            source_config = ET.fromstring(settings_bytes)
+        except ET.ParseError as exc:
+            raise GroupedPlateError(f"saved plate 3MF settings are malformed: {exc}") from exc
+        source_config_objects = source_config.findall("object")
+        selected_config = next((item for item in source_config_objects if item.get("id") == source_id), None)
+        if selected_config is None:
+            raise GroupedPlateError(f"saved plate 3MF has no settings for {expected_name}")
+        config_object = copy.deepcopy(selected_config)
+        config_object.set("id", "1")
+        parts = config_object.findall("part")
+        if len(parts) != 1:
+            raise GroupedPlateError(f"saved settings for {expected_name} must contain one part")
+        parts[0].set("id", "1")
+        standalone_config = ET.Element(source_config.tag, dict(source_config.attrib))
+        standalone_config.append(config_object)
+        config_bytes = ET.tostring(standalone_config, encoding="utf-8", xml_declaration=True)
+
+    standalone_manifest = {
+        "schema_version": 1,
+        "kind": "calibrate3dp-single-sample-export",
+        "run_id": run_id,
+        "plate_code": plate_code,
+        "module_id": package_manifest.get("module_id"),
+        "plan_id": package_manifest.get("plan_id"),
+        "sample_label": sample_label,
+        "object_name": expected_name,
+        "candidate_id": candidate_id,
+        "settings": settings_snapshot,
+        "source_plate_sha256": source_sha256,
+        "source_object_id": source_id,
+        "standalone_bounds_mm": [
+            0.0,
+            0.0,
+            0.0,
+            max(point.x for point in standalone_mesh.vertices),
+            max(point.y for point in standalone_mesh.vertices),
+            max(point.z for point in standalone_mesh.vertices),
+        ],
+        "frame_included": False,
+        "identifier_plaque_included": False,
+        "source_orientation_retained": True,
+        "print_ready": False,
+    }
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    output_path = destination_path
+    if overwrite:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination_path.name}.", suffix=".tmp", dir=destination_path.parent
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        output_path = temporary_path
+    created_destination = False
+
+    def populate_archive(archive: zipfile.ZipFile) -> None:
+        archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        archive.writestr("_rels/.rels", _ROOT_RELS)
+        archive.writestr("3D/3dmodel.model", model_bytes)
+        if config_bytes is not None:
+            archive.writestr("Metadata/model_settings.config", config_bytes)
+        archive.writestr(
+            "Metadata/calibrate3dp-sample.json",
+            json.dumps(standalone_manifest, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        )
+
+    try:
+        if overwrite:
+            with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                populate_archive(archive)
+        else:
+            with destination_path.open("xb") as output_stream:
+                created_destination = True
+                with zipfile.ZipFile(output_stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    populate_archive(archive)
+        if overwrite:
+            os.replace(output_path, destination_path)
+    except FileExistsError as exc:
+        if created_destination:
+            destination_path.unlink(missing_ok=True)
+        raise GroupedPlateError(f"sample export destination already exists: {destination_path}") from exc
+    except Exception:
+        if created_destination:
+            destination_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return destination_path
+
+
 def _geometry_model_lines(geometry: PlateGeometry, build_items: list[tuple[int, str]]):
     yield '<?xml version="1.0" encoding="UTF-8"?>\n'
     yield f'<model xmlns="{_CORE_NS}" unit="millimeter" xml:lang="en-US" version="1.0">\n<resources>\n'
@@ -400,6 +669,14 @@ def _write_xml_stream(stream, lines) -> None:
             length = 0
     if chunk:
         stream.write(b"".join(chunk))
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def grouped_plate_bounds(plan: ExperimentPlan) -> PlateBounds:

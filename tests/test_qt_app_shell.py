@@ -125,6 +125,22 @@ class QtApplicationSmokeTests(unittest.TestCase):
         self.assertTrue(window.navigation.buttons[page_enum.RUNS_HISTORY].isChecked())
         window.close()
 
+    def test_development_warning_is_persistent_and_explicit(self) -> None:
+        window = self.main_window_type(FakePrinterLibrary(PRINTERS))
+        warning = window.development_warning_banner
+
+        self.assertEqual(window.centralWidget().layout().itemAt(1).widget(), warning)
+        self.assertEqual(warning.objectName(), "developmentWarningBanner")
+        self.assertIn("STILL IN DEVELOPMENT", warning.text())
+        self.assertIn("NOT TRUSTWORTHY", warning.text())
+        self.assertIn("Do not rely on this software", warning.text())
+        self.assertIn("machine-safety decisions", warning.text())
+        self.assertIn("calibration decisions", warning.text())
+
+        window.navigation.buttons[self.app_page.RUNS_HISTORY].click()
+        self.assertTrue(warning.isVisibleTo(window))
+        window.close()
+
     def test_printer_entries_render_and_search_filters_rows(self) -> None:
         window = self.main_window_type(FakePrinterLibrary(PRINTERS))
         page = window.page_widgets[self.app_page.PRINTER_LIBRARY]
@@ -191,6 +207,102 @@ class QtApplicationSmokeTests(unittest.TestCase):
             self.assertIs(workspace.calibration_status_panel.parentWidget(), workspace.overview_tab)
             self.assertIs(workspace.run_table.parentWidget(), workspace.experiments_tab)
             self.assertIs(workspace.material_choice.parentWidget(), workspace.printer_materials_tab)
+            self.assertTrue(workspace.run_table.isHidden())
+            self.assertFalse(workspace.empty_runs_state.isHidden())
+        finally:
+            window.close()
+
+    def test_workspace_overview_routes_to_settings_and_printer_library(self) -> None:
+        window = self.main_window_type(FakePrinterLibrary(PRINTERS))
+        try:
+            window.workspace_page.settings_requested.emit()
+            self.assertIs(window.pages.currentWidget(), window.page_widgets[self.app_page.SETTINGS])
+            window.workspace_page.printer_library_requested.emit()
+            self.assertIs(window.pages.currentWidget(), window.library_page)
+        finally:
+            window.close()
+
+    def test_new_calibration_resumes_the_selected_printer_and_explains_the_flow(self) -> None:
+        window = self.main_window_type(FakePrinterLibrary(PRINTERS))
+        try:
+            page = window.page_widgets[self.app_page.NEW_CALIBRATION]
+            self.assertEqual(page.open_button.text(), "Choose a saved printer")
+
+            window._open_printer_workspace("corexy")
+            window.navigate_to(self.app_page.NEW_CALIBRATION)
+
+            self.assertEqual(page.current_context.text(), "Current printer: Workshop CoreXY")
+            self.assertEqual(page.open_button.text(), "Continue with Workshop CoreXY")
+            page.open_button.click()
+            self.assertIs(window.pages.currentWidget(), window.workspace_page)
+            self.assertIn("Workshop CoreXY", window.workspace_page.heading.text())
+        finally:
+            window.close()
+
+    def test_empty_history_shows_guidance_instead_of_a_blank_table(self) -> None:
+        window = self.main_window_type(
+            FakePrinterLibrary(PRINTERS), library_service=PlateLookupProbeLibrary()
+        )
+        try:
+            page = window.history_page
+            window.show()
+            window.navigate_to(self.app_page.RUNS_HISTORY)
+            self.application.processEvents()
+            self.assertTrue(page.lookup_result.isHidden())
+            self.assertTrue(page.table.isHidden())
+            self.assertFalse(page.empty_state.isHidden())
+            self.assertIn("generated plates", page.empty_state.text().lower())
+            self.assertLess(page.layout().itemAt(0).geometry().top(), 60)
+        finally:
+            window.close()
+
+    def test_history_filter_finds_plate_by_material_and_explains_no_matches(self) -> None:
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QLineEdit
+
+        runs = (
+            SimpleNamespace(
+                run_id="run-pla", plate_code="ABC123", printer_id="corexy",
+                material_id="pla", status="settings_validated", created_at_utc="2026-10-01",
+            ),
+            SimpleNamespace(
+                run_id="run-petg", plate_code="FGH456", printer_id="mk4",
+                material_id="petg", status="canceled", created_at_utc="2026-10-02",
+            ),
+        )
+
+        class HistoryLibrary:
+            repository = object()
+
+            def list_runs(self):
+                return runs
+
+            def list_printers(self):
+                return (SimpleNamespace(printer_id="corexy", display_name="Workshop"),
+                        SimpleNamespace(printer_id="mk4", display_name="Studio"))
+
+            def list_materials(self):
+                return (SimpleNamespace(material_id="pla", display_name="PLA"),
+                        SimpleNamespace(material_id="petg", display_name="PETG"))
+
+        window = self.main_window_type(
+            FakePrinterLibrary(PRINTERS), library_service=HistoryLibrary()
+        )
+        try:
+            page = window.history_page
+            self.assertTrue(page.table.verticalHeader().isHidden())
+            self.assertGreaterEqual(page.table.columnWidth(3), 240)
+            filter_entry = page.findChild(QLineEdit, "historyFilter")
+            self.assertIsNotNone(filter_entry)
+            filter_entry.setText("petg")
+            self.assertTrue(page.table.isRowHidden(0))
+            self.assertFalse(page.table.isRowHidden(1))
+
+            filter_entry.setText("missing")
+
+            self.assertTrue(page.table.isHidden())
+            self.assertFalse(page.empty_state.isHidden())
+            self.assertIn("no plates match", page.empty_state.text().lower())
         finally:
             window.close()
 

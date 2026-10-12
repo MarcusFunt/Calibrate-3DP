@@ -9,9 +9,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from calibrate3dp.app.__main__ import main
+from calibrate3dp.app.__main__ import bundle_self_check, main
 
 
 class ApplicationEntryPointTests(unittest.TestCase):
@@ -76,6 +78,58 @@ assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("PySide6")
+        and importlib.util.find_spec("build123d")
+        and importlib.util.find_spec("OCP"),
+        "requires the GUI and CAD extras",
+    )
+    def test_bundle_self_check_exits_without_opening_the_application(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        environment["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from calibrate3dp.app.__main__ import main; "
+                    "raise SystemExit(main(['--bundle-self-check']))",
+                ],
+                cwd=repository_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the bundle self-check entered the normal application event loop")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("PySide6") and importlib.util.find_spec("build123d"),
+        "requires the GUI and CAD extras",
+    )
+    def test_bundle_self_check_records_import_failure_for_ci(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "bundle-self-check.log"
+            with patch.dict(os.environ, {"CALIBRATE3DP_BUNDLE_SELF_CHECK_LOG": str(log_path)}):
+                original_import = __import__
+
+                def fail_webengine_import(name, *args, **kwargs):
+                    if name == "PySide6.QtWebEngineWidgets":
+                        raise ImportError("synthetic WebEngine import failure")
+                    return original_import(name, *args, **kwargs)
+
+                with patch("builtins.__import__", side_effect=fail_webengine_import):
+                    result = bundle_self_check()
+
+            self.assertEqual(result, 10)
+            self.assertIn("synthetic WebEngine import failure", log_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

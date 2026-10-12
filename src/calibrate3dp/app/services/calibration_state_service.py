@@ -87,27 +87,6 @@ class CalibrationStateService:
         state = self._evaluate_context(
             context, configuration.printer_id, configuration.material_id
         )[0]
-        failed_rule_ids = {
-            item.split(":", 1)[0]
-            for item in (*state.reasons, *state.recommendations)
-        }
-        outcomes = []
-        for rule in self.evaluator.graph.rules:
-            message = next(
-                (
-                    item.split(":", 1)[1].strip()
-                    for item in (*state.reasons, *state.recommendations)
-                    if item.startswith(rule.rule_id + ":")
-                ),
-                None,
-            )
-            outcomes.append({
-                "rule_id": rule.rule_id,
-                "severity": rule.severity,
-                "passed": rule.rule_id not in failed_rule_ids,
-                "message": message,
-            })
-
         input_values = _plain_json(dict(state.input_snapshot))
         return {
             "schema_version": _SNAPSHOT_SCHEMA_VERSION,
@@ -125,7 +104,15 @@ class CalibrationStateService:
                 "parent_assessment_revision_id": configuration.parent_assessment_revision_id,
                 "parent_candidate_id": configuration.parent_candidate_id,
             },
-            "rule_outcomes": outcomes,
+            "rule_outcomes": [
+                {
+                    "rule_id": outcome.rule_id,
+                    "severity": outcome.severity,
+                    "passed": outcome.passed,
+                    "message": outcome.message or None,
+                }
+                for outcome in state.rule_outcomes
+            ],
             "state": {
                 "status": state.status.value,
                 "can_start": state.can_start,

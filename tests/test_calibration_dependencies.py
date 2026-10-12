@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from calibrate3dp.calibration import DependencyRuleOutcome
 from calibrate3dp.calibration.dependencies import (
     DependencyContext,
     DependencyEvaluator,
@@ -35,6 +36,25 @@ class DependencyEvaluatorTests(unittest.TestCase):
         self.assertTrue(ready_to_start.can_start)
         self.assertEqual(len(ready_to_start.recommendations), 1)
         self.assertIn("nozzle_type", ready_to_start.recommendations[0])
+
+    def test_states_keep_per_rule_outcomes_for_dependency_visualization(self):
+        graph = DependencyGraph.from_rules((
+            DependencyRule("printer", "ironing", "input", "printer", "present"),
+            DependencyRule(
+                "profile-review", "ironing", "input", "profile_hash", "equals", "current",
+                severity="recommended",
+            ),
+        ))
+
+        state = DependencyEvaluator(graph).evaluate(DependencyContext({"printer": "P1"}), {})[0]
+
+        self.assertEqual(
+            [(item.rule_id, item.severity, item.passed) for item in state.rule_outcomes],
+            [("printer", "required", True), ("profile-review", "recommended", False)],
+        )
+        self.assertIsInstance(state.rule_outcomes[0], DependencyRuleOutcome)
+        self.assertEqual(state.rule_outcomes[0].message, "")
+        self.assertIn("profile_hash", state.rule_outcomes[1].message)
 
     def test_missing_and_explicit_null_are_distinct(self):
         graph = DependencyGraph.from_rules((

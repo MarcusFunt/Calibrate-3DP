@@ -22,6 +22,7 @@ from calibrate3dp.experiments import CandidateAssessment, ExperimentResults
 from calibrate3dp.storage.library_store import LibraryRepository
 from calibrate3dp.storage.session_store import SessionRepository
 from tests.test_printer_library import _records
+from tests.test_sample_3mf_export_service import _saved_run_with_plate
 
 
 APP = QApplication.instance() or QApplication([])
@@ -79,12 +80,20 @@ class QtExperimentDetailsTests(unittest.TestCase):
                 [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())],
                 ["Inspect", "Assess", "Decision", "Export"],
             )
+            self.assertIs(dialog.tabs.currentWidget(), dialog.inspect_tab)
             self.assertIs(dialog.validation.parentWidget(), dialog.inspect_tab)
             self.assertIs(dialog.scroll.parentWidget(), dialog.assess_tab)
             self.assertIs(dialog.decision_group.parentWidget(), dialog.decision_tab)
             self.assertIs(dialog.export_button.parentWidget(), dialog.export_tab)
             self.assertIn("physical", dialog.export_gate_message.text().lower())
             self.assertIn("locked", dialog.export_gate_message.text().lower())
+            self.assertFalse(dialog.sample_3mf_export_button.isEnabled())
+            self.assertIn("unavailable", dialog.sample_3mf_export_note.text().lower())
+
+            routed_dialog = ExperimentDetailsDialog(
+                LibraryService(repository, ProfileService()), run.run_id, initial_tab="Assess"
+            )
+            self.assertIs(routed_dialog.tabs.currentWidget(), routed_dialog.assess_tab)
 
             with patch("calibrate3dp.app.qt.experiment_detail.QDesktopServices.openUrl", return_value=True) as open_url:
                 dialog._open_selected_artifact()
@@ -92,11 +101,88 @@ class QtExperimentDetailsTests(unittest.TestCase):
             self.assertEqual(open_url.call_count, 1)
             self.assertEqual(Path(open_url.call_args.args[0].toLocalFile()).resolve(), artifact_path.resolve())
 
+            with patch("calibrate3dp.app.qt.experiment_detail.GcodeViewerDialog") as viewer:
+                dialog.preview_gcode_button.click()
+
+            viewer.assert_called_once_with(artifact_path.resolve(), artifact, dialog)
+
             artifact_path.write_bytes(b"changed")
             with patch("calibrate3dp.app.qt.experiment_detail.QDesktopServices.openUrl", return_value=True) as open_url:
                 dialog._open_selected_artifact()
             self.assertEqual(open_url.call_count, 0)
             self.assertIn("unavailable or changed", dialog.feedback.text())
+            with patch("calibrate3dp.app.qt.experiment_detail.GcodeViewerDialog") as viewer:
+                dialog.preview_gcode_button.click()
+            viewer.assert_not_called()
+
+    def test_details_offers_an_in_app_preview_for_saved_gcode_artifacts_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = LibraryRepository(SessionRepository(root))
+            printer, material, run = _records(root)
+            repository.add_printer(printer)
+            repository.add_material(material)
+            repository.create_run(run)
+
+            records = []
+            for relative_path, media_type, payload in (
+                ("output/plate.gcode", "text/x.gcode", b"G21\nG90\nG1 X1 E0.1\n"),
+                ("output/plate.gcode.3mf", "model/3mf", b"sliced package"),
+                ("output/manifest.json", "application/json", b"{}"),
+            ):
+                artifact_path = repository.runs_root / run.run_id / relative_path
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact_path.write_bytes(payload)
+                records.append(ArtifactRecord(
+                    artifact_path.relative_to(repository.root).as_posix(),
+                    media_type,
+                    len(payload),
+                    hashlib.sha256(payload).hexdigest(),
+                ))
+            repository.finalize_run(
+                run.run_id, status="settings_validated", artifacts=tuple(records),
+                validation={"state": "sample_settings_validated", "print_ready": False},
+            )
+
+            dialog = ExperimentDetailsDialog(LibraryService(repository, ProfileService()), run.run_id)
+            preview_button = getattr(dialog, "preview_gcode_button", None)
+            self.assertIsNotNone(preview_button, "Inspect should expose an in-app G-code preview")
+            if preview_button is None:
+                return
+
+            self.assertTrue(preview_button.isEnabled())
+            self.assertEqual(preview_button.text(), "Preview G-code")
+            dialog.artifact_choice.setCurrentIndex(dialog.artifact_choice.findData(
+                records[1].relative_path
+            ))
+            self.assertTrue(preview_button.isEnabled(), "Sliced Orca 3MF should be previewable")
+            dialog.artifact_choice.setCurrentIndex(dialog.artifact_choice.findData(
+                records[2].relative_path
+            ))
+            self.assertFalse(preview_button.isEnabled(), "Non-G-code artifacts should not be previewable")
+
+    def test_inspect_exports_sample_a_as_a_standalone_3mf(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _repository, library, run, _source = _saved_run_with_plate(root)
+            dialog = ExperimentDetailsDialog(library, run.run_id)
+            button = getattr(dialog, "sample_3mf_export_button", None)
+            self.assertIsNotNone(button, "Inspect should offer a single-sample 3MF export")
+            if button is None:
+                return
+            self.assertTrue(button.isEnabled())
+            self.assertIn("frame and plate-code plaque", dialog.sample_3mf_export_note.text())
+            destination = root / "exports" / "7K3P9D_Sample-A.3mf"
+
+            with patch(
+                "calibrate3dp.app.qt.experiment_detail.QFileDialog.getSaveFileName",
+                return_value=(str(destination), "3MF files (*.3mf)"),
+            ) as choose_path:
+                button.click()
+
+            self.assertEqual(choose_path.call_count, 1)
+            self.assertTrue(destination.is_file())
+            self.assertIn("Sample A 3MF saved", dialog.feedback.text())
 
     def test_unsaved_assessment_edits_disable_old_recommendation_actions(self):
         with tempfile.TemporaryDirectory() as temporary:

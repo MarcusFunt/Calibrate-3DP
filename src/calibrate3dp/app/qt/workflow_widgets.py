@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -21,6 +22,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -30,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from calibrate3dp.app.services.grouped_orca_service import GroupedOrcaGenerationService
 from calibrate3dp.app.services.calibration_state_service import CalibrationStateService
+from calibrate3dp.calibration.state import CalibrationStatus
 from calibrate3dp.app.qt.calibration_status import CalibrationStatusPanel
 from calibrate3dp.app.qt.experiment_review import ExperimentConfigurationDialog
 from calibrate3dp.app.qt.experiment_detail import ExperimentDetailsDialog
@@ -268,6 +272,8 @@ class PrinterWorkspacePage(QWidget):
     """Saved printer context, material selection, grouped generation and history."""
 
     add_material_requested = Signal(str)
+    settings_requested = Signal()
+    printer_library_requested = Signal()
     run_finished = Signal()
 
     def __init__(
@@ -287,6 +293,11 @@ class PrinterWorkspacePage(QWidget):
             else getattr(generation, "calibration_state_service", None)
         )
         self.printer_id: str | None = None
+        self._workspace_runs: tuple[CalibrationRunRecord, ...] = ()
+        self._ironing_state = None
+        self._recommended_action: str | None = None
+        self._recommended_run_id: str | None = None
+        self._recommended_tab = "Inspect"
         self._cancel_event: Event | None = None
         self._task: _RunTask | None = None
         self.review_dialog: ExperimentConfigurationDialog | None = None
@@ -311,30 +322,155 @@ class PrinterWorkspacePage(QWidget):
         self.tabs.addTab(self.printer_materials_tab, "Printer and materials")
         layout.addWidget(self.tabs, 1)
 
-        overview_layout = QVBoxLayout(self.overview_tab)
-        overview_layout.setContentsMargins(20, 18, 20, 20)
-        overview_layout.setSpacing(12)
-        self.calibration_status_panel = CalibrationStatusPanel(self.overview_tab)
-        overview_layout.addWidget(self.calibration_status_panel)
+        overview_columns = QHBoxLayout(self.overview_tab)
+        overview_columns.setContentsMargins(20, 18, 20, 20)
+        overview_columns.setSpacing(14)
+
+        self.overview_main_scroll = QScrollArea(self.overview_tab)
+        self.overview_main_scroll.setObjectName("overviewMainScroll")
+        self.overview_main_scroll.setWidgetResizable(True)
+        self.overview_main_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.overview_main_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.overview_main_content = QWidget()
+        self.overview_main_content.setObjectName("overviewMainContent")
+        self.overview_main_scroll.setWidget(self.overview_main_content)
+        overview_main = QVBoxLayout(self.overview_main_content)
+        overview_main.setContentsMargins(0, 0, 0, 0)
+        overview_main.setSpacing(4)
+        overview_sidebar = QVBoxLayout()
+        overview_sidebar.setSpacing(12)
+
+        self.recommended_next_step_card = QFrame(self.overview_tab)
+        self.recommended_next_step_card.setObjectName("recommendedNextStepCard")
+        self.recommended_next_step_card.setMinimumHeight(124)
+        recommendation_layout = QVBoxLayout(self.recommended_next_step_card)
+        recommendation_layout.setContentsMargins(13, 8, 13, 8)
+        recommendation_layout.setSpacing(4)
+        self.next_step_eyebrow = QLabel("RECOMMENDED NEXT STEP")
+        self.next_step_eyebrow.setObjectName("recommendedNextStepEyebrow")
+        self.next_step_title = QLabel("Choose a printer to get started")
+        self.next_step_title.setObjectName("recommendedNextStepTitle")
+        self.next_step_title.setWordWrap(True)
+        self.next_step_description = QLabel(
+            "Select a saved printer and material before preparing a calibration plate."
+        )
+        self.next_step_description.setObjectName("recommendedNextStepBody")
+        self.next_step_description.setWordWrap(True)
+        recommendation_layout.addWidget(self.next_step_eyebrow)
+        recommendation_layout.addWidget(self.next_step_title)
+        recommendation_layout.addWidget(self.next_step_description)
 
         actions = QHBoxLayout()
-        self.generate_button = QPushButton("Configure grouped ironing sweep")
+        self.generate_button = QPushButton("Open Printer Library")
         self.generate_button.setObjectName("primaryAction")
-        self.generate_button.clicked.connect(self._start_generation)
+        self.generate_button.setFixedHeight(36)
+        self.generate_button.clicked.connect(self._activate_recommendation)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setObjectName("secondaryAction")
         self.cancel_button.setEnabled(False)
+        self.cancel_button.setFixedHeight(36)
         self.cancel_button.clicked.connect(self._cancel_generation)
         actions.addWidget(self.generate_button)
         actions.addWidget(self.cancel_button)
         actions.addStretch(1)
-        overview_layout.addLayout(actions)
+        recommendation_layout.addLayout(actions)
 
-        self.state = QLabel("Select or add a material to prepare an ironing comparison.")
-        self.state.setObjectName("mutedStatus")
+        self.state = QLabel("")
+        self.state.setObjectName("overviewActionFeedback")
         self.state.setWordWrap(True)
-        overview_layout.addWidget(self.state)
-        overview_layout.addStretch(1)
+        self.state.hide()
+        recommendation_layout.addWidget(self.state)
+        overview_main.addWidget(self.recommended_next_step_card)
+
+        self.lineage_card = QFrame(self.overview_tab)
+        self.lineage_card.setObjectName("card")
+        lineage_layout = QVBoxLayout(self.lineage_card)
+        lineage_layout.setContentsMargins(13, 6, 13, 6)
+        lineage_layout.setSpacing(4)
+        lineage_title = QLabel("Plate lineage")
+        lineage_title.setObjectName("sectionTitle")
+        lineage_layout.addWidget(lineage_title)
+        self.lineage_steps_widget = QWidget(self.lineage_card)
+        self.lineage_layout = QHBoxLayout(self.lineage_steps_widget)
+        self.lineage_layout.setContentsMargins(0, 0, 0, 0)
+        self.lineage_layout.setSpacing(7)
+        self.lineage_scroll = QScrollArea(self.lineage_card)
+        self.lineage_scroll.setWidgetResizable(False)
+        self.lineage_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.lineage_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.lineage_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.lineage_scroll.setFixedHeight(42)
+        self.lineage_scroll.setWidget(self.lineage_steps_widget)
+        self.lineage_empty_state = QLabel(
+            "Related plates appear here when you create a refinement or confirmation."
+        )
+        self.lineage_empty_state.setObjectName("mutedStatus")
+        self.lineage_empty_state.setWordWrap(True)
+        lineage_layout.addWidget(self.lineage_scroll)
+        lineage_layout.addWidget(self.lineage_empty_state)
+        self.lineage_note = QLabel("")
+        self.lineage_note.setObjectName("mutedStatus")
+        self.lineage_note.setWordWrap(True)
+        self.lineage_note.hide()
+        lineage_layout.addWidget(self.lineage_note)
+        overview_main.addWidget(self.lineage_card)
+
+        recent_header = QHBoxLayout()
+        recent_title = QLabel("Recent plates")
+        recent_title.setObjectName("sectionTitle")
+        recent_header.addWidget(recent_title)
+        recent_header.addStretch(1)
+        self.all_plates_button = QPushButton("All plates")
+        self.all_plates_button.setObjectName("subtleAction")
+        self.all_plates_button.clicked.connect(
+            lambda: self.tabs.setCurrentWidget(self.experiments_tab)
+        )
+        recent_header.addWidget(self.all_plates_button)
+        overview_main.addLayout(recent_header)
+
+        self.recent_plates_table = QTableWidget(0, 4)
+        self.recent_plates_table.setObjectName("overviewRecentPlates")
+        self.recent_plates_table.setHorizontalHeaderLabels(
+            ("Plate", "Material", "Run state", "Created")
+        )
+        self.recent_plates_table.verticalHeader().hide()
+        self.recent_plates_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.recent_plates_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.recent_plates_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.recent_plates_table.setColumnWidth(0, 88)
+        self.recent_plates_table.setColumnWidth(1, 125)
+        self.recent_plates_table.setColumnWidth(2, 215)
+        self.recent_plates_table.horizontalHeader().setStretchLastSection(True)
+        self.recent_plates_table.setAlternatingRowColors(True)
+        self.recent_plates_table.verticalHeader().setDefaultSectionSize(24)
+        self.recent_plates_table.setMinimumHeight(0)
+        self.recent_plates_table.setMaximumHeight(180)
+        self.recent_plates_table.setAccessibleName(
+            "Recent plates for the selected printer"
+        )
+        self.recent_plates_table.cellActivated.connect(self._open_recent_run)
+        overview_main.addWidget(self.recent_plates_table)
+        self.recent_plates_empty_state = QLabel(
+            "No plates yet. Your generated plate history will appear here."
+        )
+        self.recent_plates_empty_state.setObjectName("emptyState")
+        self.recent_plates_empty_state.setWordWrap(True)
+        overview_main.addWidget(self.recent_plates_empty_state)
+        self.calibration_status_panel = CalibrationStatusPanel(self.overview_tab)
+        overview_sidebar.addWidget(self.calibration_status_panel)
+        overview_sidebar.addStretch(1)
+        overview_columns.addWidget(self.overview_main_scroll, 2)
+        overview_columns.addLayout(overview_sidebar, 1)
 
         experiments_layout = QVBoxLayout(self.experiments_tab)
         experiments_layout.setContentsMargins(20, 18, 20, 20)
@@ -348,8 +484,14 @@ class PrinterWorkspacePage(QWidget):
         saved_configuration_row = QHBoxLayout()
         saved_configuration_row.addWidget(QLabel("Saved ironing draft"))
         self.saved_configuration_choice = QComboBox()
-        self.saved_configuration_choice.setAccessibleName("Open a saved ironing configuration")
-        self.saved_configuration_choice.currentIndexChanged.connect(self._sync_saved_configuration_controls)
+        self.saved_configuration_choice.addItem("Choose a printer first", None)
+        self.saved_configuration_choice.setEnabled(False)
+        self.saved_configuration_choice.setAccessibleName(
+            "Open a saved ironing configuration"
+        )
+        self.saved_configuration_choice.currentIndexChanged.connect(
+            self._sync_saved_configuration_controls
+        )
         saved_configuration_row.addWidget(self.saved_configuration_choice, 1)
         self.open_configuration_button = QPushButton("Open draft…")
         self.open_configuration_button.setObjectName("secondaryAction")
@@ -358,12 +500,27 @@ class PrinterWorkspacePage(QWidget):
         experiments_layout.addLayout(saved_configuration_row)
 
         self.run_table = QTableWidget(0, 3)
+        self.run_table.setObjectName("workspaceRunTable")
         self.run_table.setHorizontalHeaderLabels(("Plate code", "Run state", "Created"))
+        self.run_table.verticalHeader().hide()
+        self.run_table.setColumnWidth(0, 130)
+        self.run_table.setColumnWidth(1, 300)
         self.run_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.run_table.horizontalHeader().setStretchLastSection(True)
         self.run_table.cellDoubleClicked.connect(self._open_run_by_row)
-        experiments_layout.addWidget(self.run_table, 1)
+        self.empty_runs_state = QLabel(
+            "No calibration plates for this printer yet. Generate a run to start its history."
+        )
+        self.empty_runs_state.setObjectName("emptyState")
+        self.empty_runs_state.setWordWrap(True)
+        self.empty_runs_state.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
+        self.run_table.hide()
+        experiments_layout.addWidget(self.empty_runs_state)
+        experiments_layout.addWidget(self.run_table, 10)
+        experiments_layout.addStretch(1)
 
         materials_layout = QVBoxLayout(self.printer_materials_tab)
         materials_layout.setContentsMargins(20, 18, 20, 20)
@@ -371,6 +528,8 @@ class PrinterWorkspacePage(QWidget):
         material_row = QHBoxLayout()
         material_label = QLabel("Active material")
         self.material_choice = QComboBox()
+        self.material_choice.addItem("Choose a printer first", None)
+        self.material_choice.setEnabled(False)
         self.material_choice.setAccessibleName("Select a saved material")
         material_label.setBuddy(self.material_choice)
         material_row.addWidget(material_label)
@@ -396,11 +555,25 @@ class PrinterWorkspacePage(QWidget):
         self._refresh_calibration_state()
 
     def show_printer(self, printer: Any | None) -> None:
+        self.state.clear()
+        self.state.hide()
         if printer is None:
             self.printer_id = None
             self.printer_context.setText("No printer is selected.")
             self.material_choice.clear()
+            self.material_choice.addItem("Choose a printer first", None)
+            self.material_choice.setEnabled(False)
+            self.saved_configuration_choice.clear()
+            self.saved_configuration_choice.addItem("Choose a printer first", None)
+            self.saved_configuration_choice.setEnabled(False)
+            self._sync_saved_configuration_controls()
             self.run_table.setRowCount(0)
+            self._workspace_runs = ()
+            self._refresh_recent_plates(())
+            self._refresh_lineage(None)
+            self.empty_runs_state.setText("Select a printer to see its calibration runs.")
+            self.empty_runs_state.show()
+            self.run_table.hide()
             self._refresh_calibration_state()
             return
         self.printer_id = printer.printer_id
@@ -426,17 +599,25 @@ class PrinterWorkspacePage(QWidget):
         materials = self.library.list_materials()
         selected = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
         self.material_choice.clear()
-        for material in materials:
-            self.material_choice.addItem(
-                f"{material.display_name}  ·  {material.filament_profile.profile.profile.name}",
-                material.material_id,
-            )
+        if not materials:
+            self.material_choice.addItem("No saved materials", None)
+            self.material_choice.setEnabled(False)
+        else:
+            self.material_choice.setEnabled(True)
+            for material in materials:
+                self.material_choice.addItem(
+                    _material_choice_label(material),
+                    material.material_id,
+                )
         index = self.material_choice.findData(selected, Qt.ItemDataRole.UserRole)
         if index >= 0:
             self.material_choice.setCurrentIndex(index)
-        runs = self.library.list_runs(printer_id=self.printer_id)
+        runs = tuple(self.library.list_runs(printer_id=self.printer_id))
+        self._workspace_runs = tuple(
+            sorted(runs, key=lambda item: (str(item.created_at_utc), item.run_id), reverse=True)
+        )
         self.run_table.setRowCount(len(runs))
-        for row, record in enumerate(runs):
+        for row, record in enumerate(self._workspace_runs):
             values = (
                 record.plate_code,
                 _run_state_label(record),
@@ -445,10 +626,20 @@ class PrinterWorkspacePage(QWidget):
             for column, value in enumerate(values):
                 self.run_table.setItem(row, column, QTableWidgetItem(value))
             self.run_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, record.run_id)
+        self.empty_runs_state.setText(
+            "No calibration plates for this printer yet. Generate a run to start its history."
+        )
+        self.empty_runs_state.setVisible(not runs)
+        self.run_table.setVisible(bool(runs))
+        self._refresh_recent_plates(self._workspace_runs)
         self._refresh_saved_configurations()
         self._refresh_calibration_state()
         if not materials:
             self.state.setText("Add a filament profile before generating a calibration run.")
+            self.state.show()
+        elif self.state.text() == "Add a filament profile before generating a calibration run.":
+            self.state.clear()
+            self.state.hide()
 
     def _refresh_calibration_state(self, *_args) -> None:
         material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
@@ -457,31 +648,290 @@ class PrinterWorkspacePage(QWidget):
             self.calibration_status_panel.set_unavailable(
                 "Calibration state service is unavailable."
             )
-            self.generate_button.setEnabled(False)
-            return
-        try:
-            states = service.states_for(
-                self.printer_id,
-                str(material_id) if material_id else None,
-            )
-        except Exception as exc:
-            self.calibration_status_panel.set_unavailable(
-                f"Calibration status could not be refreshed: {exc}"
-            )
-            self.generate_button.setEnabled(False)
-            return
-        self.calibration_status_panel.set_states(states)
-        ironing = next(
-            (item for item in states if item.calibration_id == "ironing"),
-            None,
+            self._ironing_state = None
+        else:
+            try:
+                states = service.states_for(
+                    self.printer_id,
+                    str(material_id) if material_id else None,
+                )
+            except Exception as exc:
+                self.calibration_status_panel.set_unavailable(
+                    f"Calibration status could not be refreshed: {exc}"
+                )
+                self._ironing_state = None
+            else:
+                self.calibration_status_panel.set_states(states)
+                self._ironing_state = next(
+                    (item for item in states if item.calibration_id == "ironing"),
+                    None,
+                )
+        self._refresh_overview_context(material_id)
+
+    def _refresh_overview_context(self, material_id: object | None) -> None:
+        matching = tuple(
+            run for run in self._workspace_runs
+            if material_id and run.material_id == str(material_id)
         )
-        self.generate_button.setEnabled(
-            self.generation is not None
-            and self._task is None
-            and bool(material_id)
-            and ironing is not None
-            and ironing.can_start
-        )
+        self._refresh_lineage(matching[0] if matching else None)
+        self._refresh_recommended_next_step(matching)
+
+    def _refresh_recommended_next_step(self, matching_runs) -> None:
+        self._recommended_action = None
+        self._recommended_run_id = None
+        self._recommended_tab = "Inspect"
+        self.generate_button.setEnabled(False)
+        self.cancel_button.setEnabled(self._task is not None)
+
+        if self._task is not None:
+            self.next_step_title.setText("Plate generation is in progress")
+            self.next_step_description.setText(
+                "Calibrate-3DP is running and validating the grouped plate with OrcaSlicer."
+            )
+            self.generate_button.setText("Generation in progress")
+            return
+
+        if self.printer_id is None:
+            self.next_step_title.setText("Choose a printer to get started")
+            self.next_step_description.setText(
+                "Select a saved printer and material before preparing a calibration plate."
+            )
+            self.generate_button.setText("Open Printer Library")
+            self.generate_button.setEnabled(True)
+            self._recommended_action = "printer_library"
+            return
+
+        if not self.material_choice.currentData(Qt.ItemDataRole.UserRole):
+            has_materials = self.material_choice.isEnabled()
+            self.next_step_title.setText(
+                "Choose a material" if has_materials else "Add a material to continue"
+            )
+            self.next_step_description.setText(
+                "Each plate keeps the selected material profile and printer context with its saved results."
+            )
+            self.generate_button.setText("Choose material" if has_materials else "Add material")
+            self.generate_button.setEnabled(True)
+            self._recommended_action = "materials" if has_materials else "add_material"
+            return
+
+        latest = matching_runs[0] if matching_runs else None
+        state = self._ironing_state
+        if state is not None and state.status == CalibrationStatus.STALE and latest is not None:
+            self._set_run_recommendation(
+                latest, "Inspect", f"Review saved context for plate {latest.plate_code}",
+                "Its saved printer or material context has changed. Inspect the recorded values before continuing.",
+                f"Inspect {latest.plate_code}",
+            )
+            return
+        if latest is not None and latest.status in {"validation_failed", "generation_failed", "cancelled"}:
+            self._set_run_recommendation(
+                latest, "Inspect", f"Inspect plate {latest.plate_code}",
+                "Review the saved validation result and details before deciding what to do next.",
+                f"Inspect {latest.plate_code}",
+            )
+            return
+        if latest is not None and latest.status == "generating":
+            self._set_run_recommendation(
+                latest, "Inspect", f"Check generation status for plate {latest.plate_code}",
+                "This saved run is still marked as generating. Inspect its recorded status before starting another plate.",
+                f"Inspect {latest.plate_code}",
+            )
+            return
+        if latest is not None and latest.status == "settings_validated":
+            revision = None
+            if self.library is not None:
+                try:
+                    revision = self.library.repository.latest_assessment_revision(latest.run_id)
+                except Exception:
+                    self._set_run_recommendation(
+                        latest, "Inspect", f"Review saved record for plate {latest.plate_code}",
+                        "The saved assessment state could not be checked. Inspect this plate before recording another revision.",
+                        f"Inspect {latest.plate_code}",
+                    )
+                    return
+            if revision is None:
+                self._set_run_recommendation(
+                    latest, "Assess", f"Record results for plate {latest.plate_code}",
+                    "Enter what you observed on the physical samples. Results stay attached to this saved plate.",
+                    f"Assess {latest.plate_code}",
+                )
+            else:
+                self._set_run_recommendation(
+                    latest, "Decision", f"Review saved decision for plate {latest.plate_code}",
+                    "Review the saved assessment and its recommendation. Acceptance and export remain explicit steps.",
+                    f"Review {latest.plate_code}",
+                )
+            return
+
+        if state is not None and state.status == CalibrationStatus.ACCEPTED and latest is not None:
+            self._set_run_recommendation(
+                latest, "Decision", f"Review calibration for plate {latest.plate_code}",
+                "Review the saved decision and evidence for this calibration.",
+                f"Review {latest.plate_code}",
+            )
+            return
+
+        if state is not None and state.can_start and self.generation is not None:
+            self.next_step_title.setText("Configure your first ironing plate")
+            self.next_step_description.setText(
+                "Choose the flow and speed sweep values, then review the sample layout before generation."
+            )
+            self.generate_button.setText("Configure plate")
+            self.generate_button.setEnabled(True)
+            self._recommended_action = "configure"
+            return
+
+        reasons = tuple(getattr(state, "reasons", ())) if state is not None else ()
+        reason = reasons[0] if reasons else "Review the setup items in the status panel."
+        if "orca" in reason.casefold() and ("available" in reason.casefold() or "executable" in reason.casefold()):
+            self.next_step_title.setText("Verify OrcaSlicer to continue")
+            self.next_step_description.setText(
+                "The local slicer setup needs attention before a grouped plate can be generated."
+            )
+            self.generate_button.setText("Open Settings")
+            self._recommended_action = "settings"
+        else:
+            self.next_step_title.setText("Resolve setup before configuring")
+            self.next_step_description.setText(reason)
+            self.generate_button.setText("Review printer setup")
+            self._recommended_action = "materials"
+        self.generate_button.setEnabled(True)
+
+    def _set_run_recommendation(
+        self, run, tab: str, title: str, description: str, action_label: str
+    ) -> None:
+        self._recommended_action = "open_run"
+        self._recommended_run_id = run.run_id
+        self._recommended_tab = tab
+        self.next_step_title.setText(title)
+        self.next_step_description.setText(description)
+        self.generate_button.setText(action_label)
+        self.generate_button.setEnabled(True)
+
+    def _activate_recommendation(self) -> None:
+        if self._recommended_action == "open_run" and self._recommended_run_id:
+            self._open_run(self._recommended_run_id, initial_tab=self._recommended_tab)
+        elif self._recommended_action == "configure":
+            self._start_generation()
+        elif self._recommended_action == "materials":
+            self.tabs.setCurrentWidget(self.printer_materials_tab)
+        elif self._recommended_action == "settings":
+            self.settings_requested.emit()
+        elif self._recommended_action == "printer_library":
+            self.printer_library_requested.emit()
+        elif self._recommended_action == "add_material":
+            self._request_add_material()
+
+    def _refresh_recent_plates(self, runs) -> None:
+        visible = tuple(runs[:4])
+        self.recent_plates_table.setRowCount(len(visible))
+        names = {}
+        if self.library is not None:
+            try:
+                names = {
+                    item.material_id: item.display_name
+                    for item in self.library.list_materials()
+                }
+            except Exception:
+                names = {}
+        for row, run in enumerate(visible):
+            values = (
+                run.plate_code,
+                names.get(run.material_id, "Saved material"),
+                _recent_run_state_label(run),
+                _compact_timestamp(run.created_at_utc),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(
+                    _run_state_label(run) if column == 2 else str(value)
+                )
+                self.recent_plates_table.setItem(row, column, item)
+            self.recent_plates_table.item(row, 0).setData(
+                Qt.ItemDataRole.UserRole, run.run_id
+            )
+        self.recent_plates_table.setVisible(bool(visible))
+        self.recent_plates_empty_state.setVisible(not visible)
+        if visible:
+            header_height = max(32, self.recent_plates_table.horizontalHeader().sizeHint().height())
+            self.recent_plates_table.setFixedHeight(
+                min(180, header_height + len(visible) * 24 + 4)
+            )
+
+    def _refresh_lineage(self, latest_run) -> None:
+        while self.lineage_layout.count():
+            item = self.lineage_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.lineage_steps_widget.setMinimumWidth(0)
+        self.lineage_steps_widget.setMinimumHeight(0)
+        self.lineage_note.clear()
+        self.lineage_note.hide()
+        self.lineage_empty_state.setVisible(latest_run is None)
+        if latest_run is None or self.library is None:
+            return
+
+        chain = []
+        seen = set()
+        current = latest_run
+        issue = ""
+        while current is not None and len(chain) < 12:
+            if current.run_id in seen:
+                issue = "A cycle was found in the saved lineage; showing the plates collected so far."
+                break
+            seen.add(current.run_id)
+            link = None
+            try:
+                link = self.library.repository.get_run_config_link(current.run_id)
+            except Exception:
+                issue = "Some lineage links are unavailable; showing the plates that could be loaded."
+            link = link or {}
+            relation = str(link.get("relation_type") or "initial")
+            chain.append((current, relation))
+            parent_id = link.get("parent_run_id")
+            if not parent_id:
+                break
+            if parent_id in seen:
+                issue = "A cycle was found in the saved lineage; showing the plates collected so far."
+                break
+            try:
+                current = self.library.repository.get_run(str(parent_id))
+            except Exception:
+                issue = "A linked parent plate could not be loaded; showing the remaining lineage."
+                break
+        else:
+            if len(chain) == 12:
+                issue = "Showing the 12 most recent plates in this lineage."
+
+        for index, (run, relation) in enumerate(reversed(chain)):
+            relation_label = relation.replace("_", " ").capitalize()
+            if index:
+                connector = QLabel("›")
+                connector.setObjectName("lineageConnector")
+                connector.setAccessibleName("followed by")
+                self.lineage_layout.addWidget(connector)
+            button = QPushButton(f"{run.plate_code}\n{relation_label}")
+            button.setObjectName("plateLineageStep")
+            button.setFixedHeight(40)
+            button.setAccessibleName(f"Open plate {run.plate_code} in inspection")
+            button.setToolTip(f"Open {run.plate_code} · {relation_label}")
+            button.clicked.connect(
+                lambda _checked=False, run_id=run.run_id: self._open_run(
+                    run_id, initial_tab="Inspect"
+                )
+            )
+            self.lineage_layout.addWidget(button)
+        self.lineage_steps_widget.adjustSize()
+        self.lineage_steps_widget.setMinimumSize(self.lineage_steps_widget.sizeHint())
+        if issue:
+            self.lineage_note.setText(issue)
+            self.lineage_note.show()
+
+    def _open_recent_run(self, row: int, _column: int) -> None:
+        item = self.recent_plates_table.item(row, 0)
+        run_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        self._open_run(str(run_id), initial_tab="Inspect") if run_id else None
 
     def _request_add_material(self) -> None:
         if self.printer_id is not None:
@@ -492,10 +942,14 @@ class PrinterWorkspacePage(QWidget):
         run_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         self._open_run(str(run_id)) if run_id else None
 
-    def _open_run(self, run_id: str) -> None:
+    def _open_run(self, run_id: str, *, initial_tab: str = "Inspect") -> None:
         if self.library is not None:
             dialog = ExperimentDetailsDialog(
-                self.library, run_id, self, generation_service=self.generation
+                self.library,
+                run_id,
+                self,
+                generation_service=self.generation,
+                initial_tab=initial_tab,
             )
             dialog.exec()
             self.refresh()
@@ -503,14 +957,14 @@ class PrinterWorkspacePage(QWidget):
     def _start_generation(self) -> None:
         material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
         if self.generation is None or self.printer_id is None or not material_id:
-            self.state.setText("Select a saved printer and material first.")
+            self._show_action_feedback("Select a saved printer and material first.")
             return
         try:
             review = self.generation.prepare_ironing_configuration(
                 self.printer_id, str(material_id)
             )
         except Exception as exc:
-            self.state.setText(f"Configuration review could not be prepared: {exc}")
+            self._show_action_feedback(f"Configuration review could not be prepared: {exc}")
             return
         dialog = ExperimentConfigurationDialog(review, self.generation, self)
         self.review_dialog = dialog
@@ -523,6 +977,8 @@ class PrinterWorkspacePage(QWidget):
     def _refresh_saved_configurations(self, *_args) -> None:
         self.saved_configuration_choice.clear()
         material_id = self.material_choice.currentData(Qt.ItemDataRole.UserRole)
+        configurations = ()
+        load_failed = False
         if self.library is not None and self.printer_id and material_id:
             try:
                 configurations = self.library.repository.list_unlinked_initial_configurations(
@@ -536,7 +992,22 @@ class PrinterWorkspacePage(QWidget):
                         configuration.config_id,
                     )
             except Exception as exc:
-                self.state.setText(f"Saved configuration drafts could not be loaded: {exc}")
+                load_failed = True
+                self._show_action_feedback(f"Saved configuration drafts could not be loaded: {exc}")
+        if not configurations:
+            placeholder = (
+                "Drafts unavailable"
+                if load_failed
+                else "No saved drafts for this material"
+                if material_id
+                else "Select a material first"
+                if self.printer_id
+                else "Choose a printer first"
+            )
+            self.saved_configuration_choice.addItem(placeholder, None)
+            self.saved_configuration_choice.setEnabled(False)
+        else:
+            self.saved_configuration_choice.setEnabled(True)
         self._sync_saved_configuration_controls()
 
     def _sync_saved_configuration_controls(self, *_args) -> None:
@@ -552,7 +1023,7 @@ class PrinterWorkspacePage(QWidget):
             configuration = self.library.repository.get_configuration(str(config_id))
             review = self.generation.configurations.review(configuration)
         except Exception as exc:
-            self.state.setText(f"Saved configuration could not be reopened: {exc}")
+            self._show_action_feedback(f"Saved configuration could not be reopened: {exc}")
             return
         dialog = ExperimentConfigurationDialog(
             review, self.generation, self, saved_configuration=configuration
@@ -572,14 +1043,14 @@ class PrinterWorkspacePage(QWidget):
         task.signals.failed.connect(self._generation_failed)
         self._task = task
         self.cancel_button.setEnabled(True)
-        self.state.setText("Generating and validating the grouped plate with OrcaSlicer…")
+        self._show_action_feedback("Generating and validating the grouped plate with OrcaSlicer…")
         self._refresh_calibration_state()
         QThreadPool.globalInstance().start(task)
 
     def _cancel_generation(self) -> None:
         if self._cancel_event is not None:
             self._cancel_event.set()
-            self.state.setText("Cancellation requested; waiting for OrcaSlicer to stop.")
+            self._show_action_feedback("Cancellation requested; waiting for OrcaSlicer to stop.")
             self.cancel_button.setEnabled(False)
 
     @Slot(object)
@@ -607,7 +1078,7 @@ class PrinterWorkspacePage(QWidget):
             )
             reasons = tuple(validation.get("print_readiness_reasons", ()))
             remaining = "\n".join(f"• {reason}" for reason in reasons)
-            self.state.setText(
+            self._show_action_feedback(
                 f"Plate {record.plate_code} saved.\n"
                 f"Geometry: {geometry_state} ({geometry.get('backend_id', 'unknown')} {geometry.get('backend_version', '')}, "
                 f"{geometry.get('object_count', 0)} objects). {markings}\n"
@@ -616,7 +1087,7 @@ class PrinterWorkspacePage(QWidget):
             )
         else:
             messages = record.validation.get("messages", ())
-            self.state.setText(f"Run {record.status}: " + (" ".join(messages) if messages else record.validation.get("state", "Unknown result")))
+            self._show_action_feedback(f"Run {record.status}: " + (" ".join(messages) if messages else record.validation.get("state", "Unknown result")))
         self.run_finished.emit()
 
     @Slot(str)
@@ -625,25 +1096,40 @@ class PrinterWorkspacePage(QWidget):
         self._cancel_event = None
         self.cancel_button.setEnabled(False)
         self.refresh()
-        self.state.setText(f"Generation failed: {message}")
+        self._show_action_feedback(f"Generation failed: {message}")
         self.run_finished.emit()
+
+    def _show_action_feedback(self, text: str) -> None:
+        self.state.setText(text)
+        self.state.show()
 
 
 class RunHistoryPage(QWidget):
     """Searchable list and six-character plate-code lookup."""
 
-    def __init__(self, library: LibraryService | None, parent: QWidget | None = None, *, generation_service=None) -> None:
+    def __init__(
+        self,
+        library: LibraryService | None,
+        parent: QWidget | None = None,
+        *,
+        generation_service=None,
+    ) -> None:
         super().__init__(parent)
         self.library = library
         self.generation_service = generation_service
+        self._runs: tuple[CalibrationRunRecord, ...] = ()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 36, 40, 36)
+        layout.setContentsMargins(32, 28, 32, 28)
         layout.setSpacing(14)
         heading = QLabel("Runs / History")
         heading.setObjectName("pageTitle")
-        description = QLabel("Every generated plan and its settings evidence remains linked to its plate code.")
+        heading.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        description = QLabel(
+            "Every generated plan and its settings evidence remains linked to its plate code."
+        )
         description.setObjectName("bodyCopy")
         description.setWordWrap(True)
+        description.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(heading)
         layout.addWidget(description)
         self.lookup_controls = QFrame(self)
@@ -666,33 +1152,103 @@ class RunHistoryPage(QWidget):
         self.lookup_result = QPlainTextEdit()
         self.lookup_result.setReadOnly(True)
         self.lookup_result.setMaximumHeight(150)
-        self.lookup_result.setPlaceholderText("Code lookup shows the saved printer, material, sample map, and validation state.")
+        self.lookup_result.setPlaceholderText(
+            "Code lookup shows the saved printer, material, sample map, and validation state."
+        )
+        self.lookup_result.hide()
         layout.addWidget(self.lookup_result)
+        self.filter_entry = QLineEdit()
+        self.filter_entry.setObjectName("historyFilter")
+        self.filter_entry.setAccessibleName(
+            "Filter saved runs by plate code, printer, material, or state"
+        )
+        self.filter_entry.setPlaceholderText(
+            "Filter runs by plate code, printer, material, or state"
+        )
+        self.filter_entry.setClearButtonEnabled(True)
+        self.filter_entry.textChanged.connect(self._apply_history_filter)
+        layout.addWidget(self.filter_entry)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(("Plate code", "Printer", "Material", "Run state", "Created"))
+        self.table.setObjectName("historyTable")
+        self.table.setHorizontalHeaderLabels(
+            ("Plate code", "Printer", "Material", "Run state", "Created")
+        )
+        self.table.verticalHeader().hide()
+        for column, width in ((0, 120), (1, 190), (2, 160), (3, 280)):
+            self.table.setColumnWidth(column, width)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.cellDoubleClicked.connect(self._open_run_by_row)
-        layout.addWidget(self.table, 1)
+        self.empty_state = QLabel(
+            "No generated plates yet. Your first saved calibration run will appear here."
+        )
+        self.empty_state.setObjectName("emptyState")
+        self.empty_state.setWordWrap(True)
+        self.empty_state.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
+        self.table.hide()
+        self.filter_entry.hide()
+        layout.addWidget(self.empty_state)
+        layout.addWidget(self.table, 10)
+        layout.addStretch(1)
         self.refresh()
 
     def refresh(self) -> None:
         if self.library is None:
+            self._runs = ()
+            self._apply_history_filter()
             return
-        runs = self.library.list_runs()
+        runs = tuple(self.library.list_runs())
+        self._runs = runs
         printers = {item.printer_id: item.display_name for item in self.library.list_printers()}
         materials = {item.material_id: item.display_name for item in self.library.list_materials()}
         self.table.setRowCount(len(runs))
         for row, run in enumerate(runs):
-            values = (run.plate_code, printers.get(run.printer_id, run.printer_id), materials.get(run.material_id, run.material_id), _run_state_label(run), run.created_at_utc)
+            values = (
+                run.plate_code,
+                printers.get(run.printer_id, run.printer_id),
+                materials.get(run.material_id, run.material_id),
+                _run_state_label(run),
+                run.created_at_utc,
+            )
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
             self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, run.run_id)
+        self._apply_history_filter()
+
+    def _apply_history_filter(self, *_args) -> None:
+        query = self.filter_entry.text().strip().casefold()
+        has_runs = bool(self._runs)
+        self.filter_entry.setVisible(has_runs)
+        visible_rows = 0
+        for row in range(self.table.rowCount()):
+            text = " ".join(
+                self.table.item(row, column).text()
+                for column in range(self.table.columnCount())
+                if self.table.item(row, column) is not None
+            ).casefold()
+            matches = not query or query in text
+            self.table.setRowHidden(row, not matches)
+            visible_rows += int(matches)
+
+        if not has_runs:
+            self.empty_state.setText(
+                "No generated plates yet. Your first saved calibration run will appear here."
+            )
+        elif not visible_rows:
+            self.empty_state.setText(
+                f'No plates match “{self.filter_entry.text().strip()}”. '
+                f"Clear the filter to see all {len(self._runs)} saved runs."
+            )
+        self.empty_state.setVisible(not visible_rows)
+        self.table.setVisible(bool(visible_rows))
 
     def _lookup(self) -> None:
         if self.library is None:
             self.lookup_result.setPlainText("The local library is unavailable.")
+            self.lookup_result.show()
             return
         try:
             run = self.library.repository.get_run_by_plate_code(self.code_entry.text())
@@ -700,6 +1256,7 @@ class RunHistoryPage(QWidget):
             material = self.library.repository.get_material(run.material_id)
         except Exception as exc:
             self.lookup_result.setPlainText(str(exc))
+            self.lookup_result.show()
             return
         lines = [
             f"Plate {run.plate_code} · {run.status}",
@@ -716,6 +1273,7 @@ class RunHistoryPage(QWidget):
             lines.append("Remaining print-readiness checks:")
             lines.extend(f"  • {reason}" for reason in reasons)
         self.lookup_result.setPlainText("\n".join(lines))
+        self.lookup_result.show()
         self._open_run(run.run_id)
 
     def _open_run_by_row(self, row: int, _column: int) -> None:
@@ -739,22 +1297,95 @@ class NewCalibrationPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 36, 40, 36)
-        layout.setSpacing(14)
-        heading = QLabel("New Calibration")
+        layout.setContentsMargins(36, 28, 36, 32)
+        layout.setSpacing(18)
+        heading = QLabel("Set up a calibration")
         heading.setObjectName("pageTitle")
         copy = QLabel(
-            "The current end-to-end experiment is an ironing flow and speed sweep. Open a saved printer workspace, choose a matching material, edit the A–I candidate values, review the connected plate, then generate with OrcaSlicer."
+            "Choose a printer and saved filament, then review the sample settings and plate before generating with OrcaSlicer."
         )
         copy.setObjectName("bodyCopy")
         copy.setWordWrap(True)
+        self.current_context = QLabel("No printer selected. Choose a saved printer to begin.")
+        self.current_context.setObjectName("currentPrinterContext")
+        self.current_context.setWordWrap(True)
+
+        guide = QFrame()
+        guide.setObjectName("workflowGuideCard")
+        guide_layout = QVBoxLayout(guide)
+        guide_layout.setContentsMargins(20, 18, 20, 20)
+        guide_layout.setSpacing(14)
+        guide_title = QLabel("Your calibration workflow")
+        guide_title.setObjectName("sectionTitle")
+        guide_layout.addWidget(guide_title)
+        steps = (
+            (
+                "1",
+                "Choose a printer and material",
+                "Use a saved printer and a filament profile recorded for its nozzle.",
+            ),
+            (
+                "2",
+                "Review nine A–I samples",
+                "Adjust ironing flow and speed, then check the exact candidate map and connected plate.",
+            ),
+            (
+                "3",
+                "Generate and record by hand",
+                "OrcaSlicer creates the local project and G-code. Print through your usual workflow, then enter observations here.",
+            ),
+        )
+        for number, title_text, detail_text in steps:
+            step_row = QWidget(guide)
+            step_layout = QHBoxLayout(step_row)
+            step_layout.setContentsMargins(0, 0, 0, 0)
+            step_layout.setSpacing(12)
+            number_label = QLabel(number)
+            number_label.setObjectName("workflowStepNumber")
+            number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            number_label.setFixedSize(30, 30)
+            text_column = QVBoxLayout()
+            text_column.setSpacing(3)
+            title_label = QLabel(title_text)
+            title_label.setObjectName("workflowStepTitle")
+            detail_label = QLabel(detail_text)
+            detail_label.setObjectName("mutedStatus")
+            detail_label.setWordWrap(True)
+            text_column.addWidget(title_label)
+            text_column.addWidget(detail_label)
+            step_layout.addWidget(number_label)
+            step_layout.addLayout(text_column, 1)
+            guide_layout.addWidget(step_row)
+
+        self.scope_label = QLabel(
+            "Available now: ironing flow × speed. Other V1 calibration workflows are not available yet."
+        )
+        self.scope_label.setObjectName("mutedStatus")
+        self.scope_label.setWordWrap(True)
         self.open_button = QPushButton("Choose a saved printer")
         self.open_button.setObjectName("primaryAction")
+        self.open_button.setMinimumWidth(220)
+        self.open_button.setMinimumHeight(44)
         self.open_button.clicked.connect(self.open_printer_library.emit)
         layout.addWidget(heading)
         layout.addWidget(copy)
+        layout.addWidget(self.current_context)
+        layout.addWidget(guide)
+        layout.addWidget(self.scope_label)
         layout.addWidget(self.open_button, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addStretch(1)
+
+    def set_printer_context(self, printer_name: str | None) -> None:
+        if printer_name:
+            self.current_context.setText(f"Current printer: {printer_name}")
+            self.open_button.setText(f"Continue with {printer_name}")
+            self.open_button.setAccessibleName(
+                f"Continue calibration setup with {printer_name}"
+            )
+        else:
+            self.current_context.setText("No printer selected. Choose a saved printer to begin.")
+            self.open_button.setText("Choose a saved printer")
+            self.open_button.setAccessibleName("Choose a saved printer for calibration")
 
 
 class OrcaSettingsPage(QWidget):
@@ -863,3 +1494,25 @@ def _run_state_label(record: CalibrationRunRecord) -> str:
     if record.status == "settings_validated":
         return "Sample settings validated · not print-ready"
     return record.status.replace("_", " ").capitalize()
+
+
+def _compact_timestamp(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(value)
+    return parsed.strftime("%d %b %H:%M")
+
+
+def _recent_run_state_label(record: CalibrationRunRecord) -> str:
+    if record.status == "settings_validated":
+        return "Settings validated"
+    return record.status.replace("_", " ").capitalize()
+
+
+def _material_choice_label(material: MaterialRecord) -> str:
+    display_name = material.display_name.strip()
+    profile_name = material.filament_profile.profile.profile.name.strip()
+    if profile_name.casefold() == display_name.casefold():
+        return display_name
+    return f"{display_name}  ·  {profile_name}"

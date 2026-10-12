@@ -70,6 +70,26 @@ class CalibrationEvidence:
 
 
 @dataclass(frozen=True)
+class DependencyRuleOutcome:
+    """One evaluated prerequisite or recommendation."""
+
+    rule_id: str
+    severity: str
+    passed: bool
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rule_id, str) or not self.rule_id.strip():
+            raise ValueError("rule_id must be a non-empty string")
+        if self.severity not in {"required", "recommended"}:
+            raise ValueError("severity must be 'required' or 'recommended'")
+        if not isinstance(self.passed, bool):
+            raise TypeError("passed must be a bool")
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
+
+
+@dataclass(frozen=True)
 class CalibrationState:
     """Evaluated lifecycle status and the context/rules explaining it."""
 
@@ -79,6 +99,7 @@ class CalibrationState:
     reasons: tuple[str, ...] = ()
     recommendations: tuple[str, ...] = ()
     input_snapshot: Mapping[str, JsonValue] = field(default_factory=dict)
+    rule_outcomes: tuple[DependencyRuleOutcome, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.calibration_id:
@@ -94,3 +115,10 @@ class CalibrationState:
             tuple(str(item) for item in self.recommendations),
         )
         object.__setattr__(self, "input_snapshot", frozen_mapping(self.input_snapshot, "input_snapshot"))
+        outcomes = tuple(self.rule_outcomes)
+        if any(not isinstance(item, DependencyRuleOutcome) for item in outcomes):
+            raise TypeError("rule_outcomes must contain DependencyRuleOutcome values")
+        outcome_ids = [item.rule_id for item in outcomes]
+        if len(outcome_ids) != len(set(outcome_ids)):
+            raise ValueError("rule_outcomes must have unique rule IDs")
+        object.__setattr__(self, "rule_outcomes", outcomes)

@@ -47,8 +47,20 @@ def application_stylesheet() -> str:
     status_styles = "\n".join(
         f'QFrame#calibrationLifecycleChip[state="{state}"] {{ color: {foreground}; background: {background}; }}\n'
         f'QLabel#calibrationLifecycleStatus[state="{state}"] {{ color: {foreground}; background: transparent; font-weight: 650; }}\n'
-        f'QWidget#calibrationStatusIcon[state="{state}"] {{ color: {foreground}; }}'
+        f'QWidget#calibrationStatusIcon[state="{state}"] {{ color: {foreground}; }}\n'
+        f'QFrame#calibrationTargetNode[state="{state}"] {{ color: {foreground}; background: {background}; border-color: {foreground}; }}'
         for state, (foreground, background) in status_pairs.items()
+    )
+    dependency_pairs = {
+        "met": t.status_accepted,
+        "blocked": t.status_blocked,
+        "review": t.status_needs_review,
+        "unavailable": t.status_neutral,
+    }
+    dependency_styles = "\n".join(
+        f'QFrame#calibrationDependencyNode[state="{state}"] {{ color: {foreground}; background: {background}; border-color: {foreground}; }}\n'
+        f'QLabel#calibrationDependencyState[state="{state}"] {{ color: {foreground}; background: transparent; font-weight: 650; }}'
+        for state, (foreground, background) in dependency_pairs.items()
     )
     return f"""
         QWidget {{
@@ -64,6 +76,10 @@ def application_stylesheet() -> str:
         QLabel#bodyCopy {{ color: {t.muted}; font-size: 11pt; }}
         QLabel#eyebrow {{ color: {t.muted}; font-size: 8pt; font-weight: 600; letter-spacing: 1px; }}
         QFrame#appHeader {{ background: {t.surface}; border-bottom: 1px solid {t.line}; }}
+        QLabel#developmentWarningBanner {{
+            color: #6F1D13; background: #FFF0EB; border-bottom: 1px solid #D7937F;
+            padding: 8px 24px; font-size: 9pt; font-weight: 700;
+        }}
         QWidget#navigationRail {{ background: {t.surface}; border-bottom: 1px solid {t.line}; }}
         QPushButton#brandButton {{
             color: {t.green}; background: transparent; border: 0; padding: 7px 4px;
@@ -108,16 +124,89 @@ def application_stylesheet() -> str:
         QPushButton#settingsButton:checked {{ color: {t.green}; border-color: {t.green}; background: {t.green_pale}; }}
         QPushButton#settingsButton:focus {{ border: 2px solid {t.focus}; }}
         QLineEdit {{
-            min-height: 22px; padding: 9px 12px; background: {t.surface};
+            color: {t.ink}; min-height: 22px; padding: 9px 12px; background: {t.surface};
             border: 1px solid {t.control_border}; border-radius: 7px;
         }}
         QLineEdit:focus {{ border: 2px solid {t.focus}; padding: 8px 11px; }}
         QComboBox, QSpinBox, QDoubleSpinBox {{
-            min-height: 22px; padding: 7px 10px; background: {t.surface};
+            color: {t.ink}; min-height: 22px; padding: 7px 10px; background: {t.surface};
             border: 1px solid {t.control_border}; border-radius: 7px;
         }}
-        QPlainTextEdit, QTextEdit, QTableWidget {{
-            background: {t.surface}; border: 1px solid {t.control_border}; border-radius: 7px;
+        QComboBox::drop-down {{
+            width: 26px; border-left: 1px solid {t.line}; border-top-right-radius: 7px;
+            border-bottom-right-radius: 7px; background: {t.surface_subtle};
+        }}
+        QComboBox QAbstractItemView {{
+            color: {t.ink}; background: {t.surface}; border: 1px solid {t.control_border};
+            selection-color: {t.ink}; selection-background-color: {t.green_pale};
+        }}
+        QPlainTextEdit, QTextEdit, QTableWidget, QTableView {{
+            color: {t.ink}; background: {t.surface}; border: 1px solid {t.control_border};
+            border-radius: 7px; alternate-background-color: {t.surface_subtle};
+        }}
+        QAbstractItemView::viewport {{ background-color: {t.surface}; color: {t.ink}; }}
+        QTableWidget::item, QTableView::item {{ padding: 6px 8px; }}
+        QPlainTextEdit {{ padding: 8px; }}
+        QScrollArea {{ background: transparent; border: 0; }}
+        QScrollArea#overviewMainScroll {{ background: transparent; border: 0; }}
+        QWidget#overviewMainContent {{ background: transparent; }}
+        QPushButton {{
+            color: {t.ink}; background: {t.surface}; border: 1px solid {t.control_border};
+            border-radius: 7px; padding: 7px 12px; min-height: 22px; font-weight: 550;
+        }}
+        QPushButton:hover {{ background: {t.green_pale}; border-color: {t.green}; }}
+        QPushButton:disabled {{ color: {t.muted}; background: {t.surface_subtle}; border-color: {t.line}; }}
+        QPushButton:focus {{ border: 2px solid {t.focus}; }}
+        QToolButton#subtleAction {{
+            color: {t.green}; background: transparent; border: 1px solid transparent;
+            padding: 3px 1px; text-align: left; font-weight: 600;
+        }}
+        QToolButton#subtleAction:hover {{ color: {t.green_dark}; text-decoration: underline; }}
+        QToolButton#subtleAction:focus {{ border: 2px solid {t.focus}; }}
+        QWidget#calibrationStatusPanel {{
+            background: {t.surface}; border: 1px solid {t.line}; border-radius: 10px;
+        }}
+        QWidget#calibrationDependencyFlow {{ background: transparent; border: 0; }}
+        QFrame#calibrationDependencyNode {{ border: 1px solid {t.line}; border-radius: 8px; }}
+        QLabel#calibrationDependencyTitle {{ color: {t.ink}; font-size: 9pt; font-weight: 600; }}
+        QWidget#calibrationDependencyConnector {{ background: transparent; }}
+        QFrame#calibrationTargetNode {{ border: 1.5px solid {t.line}; border-radius: 9px; }}
+        QLabel#calibrationWorkflow {{ color: {t.ink}; font-size: 10pt; font-weight: 650; }}
+        {dependency_styles}
+        QFrame#workflowGuideCard {{
+            background: {t.surface}; border: 1px solid {t.line}; border-radius: 10px;
+        }}
+        QFrame#recommendedNextStepCard {{
+            background: {t.green_pale}; border: 1px solid {t.green}; border-radius: 10px;
+        }}
+        QLabel#recommendedNextStepEyebrow {{
+            color: {t.green_dark}; font-size: 8pt; font-weight: 700; letter-spacing: 1px;
+        }}
+        QLabel#recommendedNextStepTitle {{
+            color: {t.ink}; font-size: 17pt; font-weight: 700;
+        }}
+        QLabel#recommendedNextStepBody {{ color: {t.muted}; font-size: 10pt; }}
+        QLabel#lineageConnector {{ color: {t.muted}; font-size: 16pt; font-weight: 600; }}
+        QLabel#overviewActionFeedback {{
+            color: {t.muted}; background: {t.surface}; border: 1px solid {t.line};
+            border-radius: 7px; padding: 8px 10px;
+        }}
+        QLabel#workflowStepNumber {{
+            color: {t.green}; background: {t.green_pale}; border: 1px solid {t.line};
+            border-radius: 15px; font-weight: 700;
+        }}
+        QLabel#workflowStepTitle {{ color: {t.ink}; font-weight: 650; }}
+        QLabel#currentPrinterContext {{ color: {t.green_dark}; font-weight: 650; }}
+        QLabel#emptyState {{
+            color: {t.muted}; background: {t.surface_subtle}; border: 1px solid {t.line};
+            border-radius: 8px; padding: 16px; min-height: 52px;
+        }}
+        QLabel#calibrationCanStart {{ color: {t.ink}; font-weight: 600; }}
+        QLabel#calibrationAvailability {{ color: {t.muted}; }}
+        QLabel#calibrationPrintReadiness {{ color: {t.muted}; }}
+        QLabel#calibrationTechnicalDetails {{
+            color: {t.muted}; background: {t.surface_subtle}; border: 1px solid {t.line};
+            border-radius: 7px; padding: 9px;
         }}
         QHeaderView::section {{
             color: {t.ink}; background: {t.surface_subtle}; border: 1px solid {t.line};
@@ -138,12 +227,29 @@ def application_stylesheet() -> str:
         QPushButton#primaryAction:hover {{ background: {t.green_dark}; border-color: {t.green_dark}; }}
         QPushButton#primaryAction:disabled {{ background: {t.line}; color: {t.muted}; border-color: {t.line}; }}
         QPushButton#primaryAction:focus {{ border: 2px solid {t.focus}; }}
-        QPushButton#secondaryAction {{
+        QWidget#recommendedNextStepCard QPushButton#primaryAction,
+        QWidget#recommendedNextStepCard QPushButton#secondaryAction {{
+            padding: 3px 13px; min-height: 18px;
+        }}
+        QPushButton#secondaryAction, QPushButton#overviewAddMaterial {{
             background: transparent; color: {t.green}; border: 1px solid {t.green};
             border-radius: 8px; padding: 11px 17px; min-height: 22px; font-weight: 600;
         }}
-        QPushButton#secondaryAction:hover {{ background: {t.green_pale}; }}
-        QPushButton#secondaryAction:focus {{ border: 2px solid {t.focus}; }}
+        QPushButton#secondaryAction:hover, QPushButton#overviewAddMaterial:hover {{ background: {t.green_pale}; }}
+        QPushButton#secondaryAction:focus, QPushButton#overviewAddMaterial:focus {{ border: 2px solid {t.focus}; }}
+        QPushButton#secondaryAction:disabled, QPushButton#overviewAddMaterial:disabled {{
+            color: {t.muted}; background: {t.surface_subtle}; border-color: {t.line};
+        }}
+        QPushButton#subtleAction {{
+            color: {t.green}; background: transparent; border-color: transparent; padding: 4px 8px;
+        }}
+        QPushButton#plateLineageStep {{
+            color: {t.green_dark}; background: {t.surface}; border: 1px solid {t.line};
+            border-radius: 8px; padding: 2px 9px; min-width: 86px; min-height: 20px;
+            font-size: 9pt; font-weight: 650;
+        }}
+        QPushButton#plateLineageStep:hover {{ background: {t.green_pale}; border-color: {t.green}; }}
+        QPushButton#plateLineageStep:focus {{ border: 2px solid {t.focus}; }}
         QFrame#card {{ background: {t.surface}; border: 1px solid {t.line}; border-radius: 10px; }}
         QFrame#divider {{ background: {t.line}; max-width: 1px; }}
         QLabel#mutedStatus {{ color: {t.muted}; }}

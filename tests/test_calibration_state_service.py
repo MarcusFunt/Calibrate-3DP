@@ -136,6 +136,15 @@ class CalibrationStateServiceTests(unittest.TestCase):
                 {rule.rule_id for rule in IRONING_DEPENDENCY_GRAPH.rules},
             )
             self.assertTrue(all(item["passed"] for item in snapshot["rule_outcomes"]))
+            state_outcomes = {
+                item.rule_id: (item.severity, item.passed, item.message or None)
+                for item in state.rule_outcomes
+            }
+            snapshot_outcomes = {
+                item["rule_id"]: (item["severity"], item["passed"], item["message"])
+                for item in snapshot["rule_outcomes"]
+            }
+            self.assertEqual(snapshot_outcomes, state_outcomes)
 
     def test_missing_or_changed_source_profile_blocks_new_generation(self):
         for change in ("missing", "changed"):
@@ -160,6 +169,12 @@ class CalibrationStateServiceTests(unittest.TestCase):
                 self.assertEqual(state.status, CalibrationStatus.BLOCKED)
                 self.assertFalse(state.can_start)
                 self.assertTrue(any("profile_hash_state.process" in item for item in state.reasons))
+                process_outcome = next(
+                    item for item in state.rule_outcomes
+                    if item.rule_id == "process-profile-hash-current"
+                )
+                self.assertFalse(process_outcome.passed)
+                self.assertIn("profile_hash_state.process", process_outcome.message)
                 self.assertEqual(repository.list_runs(), ())
 
     def test_missing_material_and_mismatched_nozzle_have_actionable_blockers(self):
@@ -254,8 +269,20 @@ class CalibrationStateServiceTests(unittest.TestCase):
             root = Path(temp)
             repository, library, printer, material = _create_test_library(root)
             generation = GroupedOrcaGenerationService(library, cli_provider=FakeGroupedOrca)
-            run = generation.generate_ironing(printer.printer_id, material.material_id)
+            configuration = generation.prepare_ironing_configuration(
+                printer.printer_id, material.material_id
+            ).configuration
+            generation.save_configuration(configuration)
             state_service = generation.calibration_state_service
+            run = _make_run(
+                repository,
+                configuration,
+                run_id="run-profile-change",
+                validation={
+                    "dependency_snapshot": state_service.snapshot_for(configuration),
+                },
+            )
+            self.assertEqual(run.status, "settings_validated")
 
             unrelated = root / "orca" / "system" / "process" / "unrelated.json"
             _write_profile(unrelated, {"name": "Other process", "type": "process"})

@@ -10,6 +10,7 @@ from .state import (
     CalibrationEvidence,
     CalibrationState,
     CalibrationStatus,
+    DependencyRuleOutcome,
     JsonValue,
     frozen_mapping,
     freeze_json,
@@ -143,8 +144,15 @@ class DependencyEvaluator:
             evidence = records.get(calibration_id)
             rule_reasons: list[tuple[str, str]] = []
             rule_recommendations: list[tuple[str, str]] = []
+            rule_outcomes: list[DependencyRuleOutcome] = []
             for rule in rules_by_calibration[calibration_id]:
                 passed, explanation = _evaluate_rule(rule, context, records, state_by_calibration)
+                rule_outcomes.append(DependencyRuleOutcome(
+                    rule_id=rule.rule_id,
+                    severity=rule.severity,
+                    passed=passed,
+                    message="" if passed else explanation,
+                ))
                 if passed:
                     continue
                 message = f"{rule.rule_id}: {explanation}"
@@ -171,6 +179,7 @@ class DependencyEvaluator:
                 reasons=reasons,
                 recommendations=recommendations,
                 input_snapshot=input_snapshot,
+                rule_outcomes=tuple(rule_outcomes),
             )
 
         return tuple(state_by_calibration[key] for key in sorted(state_by_calibration))

@@ -6,12 +6,18 @@ from .dependencies import (
     DependencyGraph,
     DependencyRule,
 )
-from .state import CalibrationEvidence, CalibrationState, CalibrationStatus
+from .state import (
+    CalibrationEvidence,
+    CalibrationState,
+    CalibrationStatus,
+    DependencyRuleOutcome,
+)
 
 __all__ = [
     "CalibrationEvidence",
     "CalibrationState",
     "CalibrationStatus",
+    "DependencyRuleOutcome",
     "DependencyContext",
     "DependencyEvaluator",
     "DependencyGraph",

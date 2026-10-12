@@ -265,12 +265,15 @@ The current primary checkout is `D:\projects\Calibrate-3DP` on `main` at baselin
 - [ ] Keep argument-vector invocation, isolated data/output directories, timeout, cancellation, streaming logs, and partial-output retention.
 - [ ] Create resolved profile inputs without changing the user's Orca configuration.
 - [ ] Add version capability checks for object overrides and layer-change temperature events.
-- [ ] Parse G-code and compare expected setting comments/commands to the compiled per-sample plan.
+- [x] Keep the setting validator narrow and add local visual review through bundled `@chestnutlabs/gcode-preview-vue` 0.20.1 for `.gcode` and `.gcode.3mf`; the upstream parser runs in the WebEngine worker. This display does not contribute validation evidence or print-readiness state.
+- [ ] Before using any parser output to make validation or safety claims, qualify that behavior separately against the supported Orca matrix; do not extend the bounded first-party preflight into a general parser.
 - [ ] Check start/end sequences, temperatures, work envelope, required toolpath markers, empty output, and CLI exit status.
 - [ ] Refuse to label output print-ready if any check is unknown, failed, or unsupported.
 - [ ] Store the exact executable identity, CLI arguments, logs, effective profiles, settings hashes, and output hashes in the run manifest.
 
 **Bounded preflight status (2026-10-10):** A separate modal linear G0/G1 subset parser is integrated into the grouped run report. It checks parsed XYZE movement against saved printable polygons/keep-outs and Z limits, temperature targets and blocking waits, records unsupported commands and unverified state, and treats zero setpoints as heater shutdowns. The retained real Orca file was checked across 90,931 movements and remains blocked: G28/M201/M203/M84 are unsupported, some movement precedes explicit G21, bed temperature limits are unavailable, and a 150°C nozzle target is below the saved 190–230°C range. This is a bounded failure report, not completion of this task or a hardware-safety claim; see the dated history entry and retained report path.
+
+**User direction (2026-10-12 supersedes the previous direction):** Add an in-app G-code viewer and parser by using a mature upstream library instead of implementing either locally. The Qt app bundles `@chestnutlabs/gcode-preview-vue` 0.20.1 and its MIT dependency tree as offline static assets. It supports saved `.gcode` and Orca-sliced `.gcode.3mf`; the renderer selects 3D when WebGL is available and 2D layers otherwise. It is a visual-inspection aid only, not an output validator. Research, package identity, licenses, and actual Orca artifact checks are recorded in `docs/REUSE_RESEARCH.md`, `docs/ORCA_3MF_FORMAT_GUIDE.md`, and `docs/PROGRESS_HISTORY.md`.
 
 ---
 
@@ -360,9 +363,13 @@ The current primary checkout is `D:\projects\Calibrate-3DP` on `main` at baselin
 - [x] Let the user select a saved printer, inspect its saved materials and generated-run history, and start the available grouped ironing workflow. Calibration status is available only for ironing flow × speed; other families are not exposed as graph nodes.
 - [x] Render the available workflow status and reasons from DependencyEvaluator output. The UI does not calculate prerequisite logic itself; a full graph across all calibration families remains open.
 - [x] Allow lookup by six-character plate code and show the saved run, sample settings, artifacts, validation, assessment editor, and readiness blockers. The workspace now also presents the service-evaluated calibration state.
+- [x] Export the first mapped sample from a validated saved run as a standalone 3MF for slicer review. Verify the source artifact and preserve the immutable run; the sample export is not print-ready.
 - [x] Add a global printer/material context header and plate lookup; group workspace content into Overview, Experiments, and Printer and materials tabs, with text-and-icon workflow states and higher-contrast controls.
 - [x] Keep the run generation service cancellable and responsive using a Qt worker thread.
 - [x] Test calibration status transitions, available workflow rendering, and fake async generation through six-character plate lookup with offscreen Qt tests using a fake state service/repository and existing Orca setup fixtures.
+- [x] Make the calibration entry contextual, explain the manual workflow and blockers, expose the missing-material action, and filter run history with clear empty states.
+- [x] Make the workspace Overview a continuation point with a service-aware next action, linked plate lineage, and four recent runs. Route each action to the existing configuration, assessment, inspection, decision, settings, or material flow without changing acceptance or print-readiness policy.
+- [x] Present the seven current ironing prerequisites as four labeled groups flowing into the calibration node. Use evaluator outcomes for each group's status and keep blocker explanations readable; other V1 calibration families remain outside this graph.
 
 ### Task 15: Complete acceptance matrix and release evidence
 
@@ -375,6 +382,7 @@ The current primary checkout is `D:\projects\Calibrate-3DP` on `main` at baselin
 - [ ] Physically print representative plates for each layout family. Record connector revision, material, handling result, and label/code readability.
 - [ ] Verify source profiles remain unchanged and output exports can be imported into each supported Orca version.
 - [ ] Verify accessibility basics, keyboard navigation, display scaling, native file dialogs, backup, and recovery.
+- [x] Add a Windows x64 GitHub Actions development-build artifact with a bundled, persistent not-trustworthy warning and a checksummed ZIP. A local frozen-app smoke check passed; hosted workflow output is not V1 release evidence.
 - [x] Record exact test commands, outcomes, logs, artifact hashes, assumptions, and deviations in docs/PROGRESS_HISTORY.md.
 - [ ] Mark V1 complete only when every acceptance criterion in docs/V1_GOAL.md has evidence.
 

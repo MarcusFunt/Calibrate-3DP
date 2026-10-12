@@ -243,6 +243,72 @@ class OrcaCliTests(unittest.TestCase):
                     data_dir=data,
                 )
 
+    def test_slice_can_export_info_and_gcode_3mf_within_isolated_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, machine, process, filament, output, data = self._slice_inputs(root)
+            cli = OrcaCli(root / "orca-slicer.exe")
+
+            argv = cli.build_slice_argv(
+                model_path=model,
+                machine_process_profiles=(machine, process),
+                filament_profiles=(filament,),
+                output_dir=output,
+                data_dir=data,
+                inspect_model=True,
+                export_3mf_filename="sample.gcode.3mf",
+            )
+
+            self.assertIn("--info", argv)
+            self.assertEqual(argv[argv.index("--export-3mf") + 1], "sample.gcode.3mf")
+            self.assertEqual(argv[-1], str(model))
+
+            with self.assertRaisesRegex(OrcaCliError, "filename"):
+                cli.build_slice_argv(
+                    model_path=model,
+                    machine_process_profiles=(machine, process),
+                    filament_profiles=(filament,),
+                    output_dir=output,
+                    data_dir=data,
+                    export_3mf_filename="..\\outside.3mf",
+                )
+
+            with self.assertRaisesRegex(OrcaCliError, r"\.3mf"):
+                cli.build_slice_argv(
+                    model_path=model,
+                    machine_process_profiles=(machine, process),
+                    filament_profiles=(filament,),
+                    output_dir=output,
+                    data_dir=data,
+                    export_3mf_filename="sample.zip",
+                )
+
+    def test_run_slice_reports_optional_gcode_3mf_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, machine, process, filament, output, data = self._slice_inputs(root)
+            exported = output / "sample.gcode.3mf"
+
+            def simulate_cli(*args, **kwargs):
+                (output / "plate_1.gcode").write_text("; generated")
+                exported.write_bytes(b"mock 3MF archive")
+                return subprocess.CompletedProcess(args[0], 0, "model info", "")
+
+            with patch("calibrate3dp.orca_cli.subprocess.run", side_effect=simulate_cli):
+                result = OrcaCli(root / "orca-slicer.exe").run_slice(
+                    model_path=model,
+                    machine_process_profiles=(machine, process),
+                    filament_profiles=(filament,),
+                    output_dir=output,
+                    data_dir=data,
+                    inspect_model=True,
+                    export_3mf_filename=exported.name,
+                )
+
+        self.assertEqual(result.stdout, "model info")
+        self.assertEqual(result.gcode_files, (output / "plate_1.gcode",))
+        self.assertEqual(result.exported_3mf_files, (exported,))
+
     def test_rejects_semicolon_profile_path_and_missing_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

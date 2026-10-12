@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 import struct
@@ -34,7 +35,9 @@ from PySide6.QtWidgets import (
 from calibrate3dp.app.services.assessment_service import AssessmentService
 from calibrate3dp.app.services.run_decision_service import RunDecisionService
 from calibrate3dp.app.services.run_export_service import RunExportService
+from calibrate3dp.app.services.sample_3mf_export_service import Sample3MFExportService
 from calibrate3dp.app.qt.export_review import RunExportReviewDialog
+from calibrate3dp.app.qt.gcode_viewer import GcodeViewerDialog, supports_gcode_preview
 from calibrate3dp.domain.assessment import PrintAttestation
 from calibrate3dp.domain.records import CalibrationRunRecord
 from calibrate3dp.experiments import CandidateAssessment, ExperimentResults
@@ -226,7 +229,15 @@ class IdentifierMeshPreview(QWidget):
 class ExperimentDetailsDialog(QDialog):
     """Show run evidence and append a resumable manual assessment revision."""
 
-    def __init__(self, library, run_id: str, parent: QWidget | None = None, *, generation_service=None) -> None:
+    def __init__(
+        self,
+        library,
+        run_id: str,
+        parent: QWidget | None = None,
+        *,
+        generation_service=None,
+        initial_tab: str = "Inspect",
+    ) -> None:
         super().__init__(parent)
         self.library = library
         self.generation_service = generation_service
@@ -284,6 +295,42 @@ class ExperimentDetailsDialog(QDialog):
         self.inspect_intro.setObjectName("bodyCopy")
         self.inspect_intro.setWordWrap(True)
         inspect_layout.addWidget(self.inspect_intro)
+        self.sample_3mf_export_group = QGroupBox("Try one sample in your slicer")
+        sample_export_layout = QHBoxLayout(self.sample_3mf_export_group)
+        self.sample_3mf_export_note = QLabel(
+            "Exports Sample A on its own, with its original orientation and ironing settings metadata "
+            "(support varies by slicer). The shared frame and plate-code plaque are omitted. Choose printer "
+            "and material in your slicer, then inspect its slice preview before printing. Print-ready: no."
+        )
+        self.sample_3mf_export_note.setObjectName("bodyCopy")
+        self.sample_3mf_export_note.setWordWrap(True)
+        sample_export_layout.addWidget(self.sample_3mf_export_note, 1)
+        self.sample_3mf_export_button = QPushButton("Export Sample A 3MF…")
+        self.sample_3mf_export_button.setObjectName("primaryAction")
+        geometry_validation = self.run.validation.get("geometry")
+        plate_3mf_count = sum(
+            1 for artifact in self.run.artifacts
+            if artifact.relative_path.replace("\\", "/").casefold().endswith("/plate.3mf")
+        )
+        export_available = (
+            isinstance(geometry_validation, Mapping)
+            and geometry_validation.get("valid") is True
+            and bool(self.run.sample_map)
+            and bool(self.run.plan.candidates)
+            and plate_3mf_count == 1
+        )
+        self.sample_3mf_export_button.setEnabled(export_available)
+        if not export_available:
+            self.sample_3mf_export_note.setText(
+                "Sample export is unavailable because this run has no validated geometry and unique saved plate 3MF."
+            )
+        self.sample_3mf_export_button.setToolTip(
+            "Save a standalone 3MF model containing only the first mapped sample."
+            if export_available else "Requires validated sample geometry and a saved plate.3mf artifact."
+        )
+        self.sample_3mf_export_button.clicked.connect(self._export_first_sample_3mf)
+        sample_export_layout.addWidget(self.sample_3mf_export_button)
+        inspect_layout.addWidget(self.sample_3mf_export_group)
         self.validation = QPlainTextEdit()
         self.validation.setReadOnly(True)
         self.validation.setMaximumHeight(145)
@@ -309,11 +356,20 @@ class ExperimentDetailsDialog(QDialog):
         for artifact in self.run.artifacts:
             self.artifact_choice.addItem(artifact.relative_path, artifact.relative_path)
         artifact_row.addWidget(self.artifact_choice, 1)
+        self.preview_gcode_button = QPushButton("Preview G-code")
+        self.preview_gcode_button.setAccessibleName("Preview selected G-code in the offline toolpath viewer")
+        self.preview_gcode_button.setToolTip(
+            "View saved .gcode and sliced .gcode.3mf files locally. The preview does not validate print safety."
+        )
+        self.preview_gcode_button.clicked.connect(self._preview_selected_gcode)
+        artifact_row.addWidget(self.preview_gcode_button)
         self.open_artifact_button = QPushButton("Open artifact")
         self.open_artifact_button.setEnabled(bool(self.run.artifacts))
         self.open_artifact_button.clicked.connect(self._open_selected_artifact)
         artifact_row.addWidget(self.open_artifact_button)
         inspect_layout.addLayout(artifact_row)
+        self.artifact_choice.currentIndexChanged.connect(self._update_gcode_preview_enabled)
+        self._update_gcode_preview_enabled()
         inspect_layout.addStretch(1)
 
         assess_layout = QVBoxLayout(self.assess_tab)
@@ -492,6 +548,13 @@ class ExperimentDetailsDialog(QDialog):
         self._sync_attestation_controls()
         self._connect_dirty_signals()
         self._sync_export_gate_message()
+        tab_index = {
+            "Inspect": 0,
+            "Assess": 1,
+            "Decision": 2,
+            "Export": 3,
+        }.get(initial_tab, 0)
+        self.tabs.setCurrentIndex(tab_index)
 
     def _load_revision(self) -> None:
         self._loading_assessment = True
@@ -818,6 +881,50 @@ class ExperimentDetailsDialog(QDialog):
             self.feedback.setText(f"The system could not open {artifact.relative_path}.")
             return
         self.feedback.setText(f"Opened {artifact.relative_path}.")
+
+    def _update_gcode_preview_enabled(self, *_args) -> None:
+        relative_path = self.artifact_choice.currentData()
+        self.preview_gcode_button.setEnabled(
+            bool(relative_path and supports_gcode_preview(str(relative_path)))
+        )
+
+    def _preview_selected_gcode(self) -> None:
+        relative_path = self.artifact_choice.currentData()
+        artifact = next(
+            (item for item in self.run.artifacts if item.relative_path == relative_path), None
+        )
+        if artifact is None or not supports_gcode_preview(artifact.relative_path):
+            self.feedback.setText("Select a saved .gcode or sliced .gcode.3mf artifact first.")
+            return
+        try:
+            path = self.library.repository.artifact_path(artifact)
+        except Exception as exc:
+            self.feedback.setText(f"Artifact is unavailable or changed: {exc}")
+            return
+        viewer = GcodeViewerDialog(path, artifact, self)
+        viewer.exec()
+
+    def _export_first_sample_3mf(self) -> None:
+        default_path = Path.home() / "Downloads" / f"{self.run.plate_code}_Sample-A.3mf"
+        filename, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Sample A as a 3MF",
+            str(default_path),
+            "3MF model (*.3mf)",
+        )
+        if not filename:
+            return
+        destination = Path(filename)
+        if destination.suffix.casefold() != ".3mf":
+            destination = destination.with_suffix(".3mf")
+        try:
+            saved_path = Sample3MFExportService(self.library).export_first_sample(
+                self.run.run_id, destination, overwrite=True
+            )
+        except Exception as exc:
+            self.feedback.setText(f"Sample A 3MF export failed: {exc}")
+            return
+        self.feedback.setText(f"Sample A 3MF saved: {saved_path}")
 
 
 def _sample_label(run: CalibrationRunRecord, candidate_id: str, index: int) -> str:

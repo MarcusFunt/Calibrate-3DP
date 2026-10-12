@@ -1,0 +1,22 @@
+{
+  "name": "calibrate3dp-gcode-viewer-assets",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Offline Qt WebEngine bundle for the Calibrate-3DP G-code viewer",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@chestnutlabs/gcode-preview-vue": "0.20.1",
+    "three": "0.178.0",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.10",
+    "vite": "8.3.4"
+  }
+}

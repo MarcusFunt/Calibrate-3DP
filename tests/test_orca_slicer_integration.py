@@ -25,7 +25,9 @@ from calibrate3dp.grouped_plate import (
     validate_grouped_ironing_gcode,
     validate_grouped_plate_layout_gcode,
     validate_build123d_feature_toolpaths,
+    write_grouped_plate_3mf,
     write_plate_geometry_3mf,
+    write_sample_3mf_from_plate,
 )
 from calibrate3dp.ironing import create_initial_ironing_experiment
 from calibrate3dp.orca_cli import OrcaCli, reconcile_orca_identity
@@ -54,6 +56,151 @@ def _integration_root(prefix: str):
     "set ORCA_SLICER_EXE and ORCA_PROFILE_ROOT to run the local Orca integration test",
 )
 class OrcaSlicerIntegrationTests(unittest.TestCase):
+    def test_standalone_first_sample_3mf_loads_and_applies_ironing_overrides(self):
+        profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
+        documents = []
+        for kind in ("machine", "process", "filament"):
+            for path in (profile_root / kind).glob("*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
+                    documents.append(ProfileDocument(payload["name"], payload["type"], "orca-sample-import", payload, str(path)))
+        catalog = ProfileCatalog(documents)
+        machine = catalog.resolve("machine", "orca-sample-import", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
+        process = catalog.resolve("process", "orca-sample-import", os.environ.get("ORCA_PROCESS_PROFILE", "0.20mm Standard @Creality Ender3V2"))
+        filament = catalog.resolve("filament", "orca-sample-import", os.environ.get("ORCA_FILAMENT_PROFILE", "Creality Generic PLA"))
+        adapter = OrcaProfileAdapter()
+        machine_cli = dict(machine.settings)
+        machine_cli.pop("inherits", None)
+        machine_cli["name"] = machine.profile.name
+        machine_cli["type"] = machine.profile.kind
+        process_cli = adapter.to_cli_profile(
+            process,
+            name=process.profile.name + " [Calibrate3DP sample import]",
+            settings_patch={
+                "ironing_type": "top",
+                "ironing_flow": "5%",
+                "ironing_speed": "5",
+                "gcode_comments": "1",
+                "gcode_label_objects": "1",
+            },
+        )
+        filament_cli = adapter.to_cli_profile(filament, name=filament.profile.name + " [Calibrate3DP sample import]")
+        plan = create_initial_ironing_experiment(
+            plan_id="orca-standalone-sample-import",
+            baseline_settings={**dict(process.settings), "ironing_type": "top", "ironing_flow": "5%", "ironing_speed": "5"},
+            flow_values=(12, 15, 18),
+            speed_values=(10, 15, 20),
+        )
+        candidate = plan.candidates[0]
+        with _integration_root("standalone-sample-import") as root:
+            source = write_grouped_plate_3mf(plan, plate_code="7K3P9D", destination=root / "plate.3mf")
+            sample = write_sample_3mf_from_plate(
+                source,
+                destination=root / "sample-a.3mf",
+                run_id="orca-sample-import",
+                plate_code="7K3P9D",
+                sample_label="A",
+                candidate_id=candidate.candidate_id,
+                settings=candidate.overrides,
+            )
+            profiles = root / "profiles"
+            profiles.mkdir()
+            profile_paths = {}
+            for name, payload in (("machine", machine_cli), ("process", process_cli), ("filament", filament_cli)):
+                profile_paths[name] = profiles / f"{name}.json"
+                profile_paths[name].write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            output, data = root / "output", root / "data"
+            output.mkdir()
+            data.mkdir()
+            capabilities = OrcaCli(os.environ["ORCA_SLICER_EXE"]).probe(timeout_seconds=30)
+            result = OrcaCli(os.environ["ORCA_SLICER_EXE"]).run_slice(
+                model_path=sample,
+                machine_process_profiles=(profile_paths["machine"], profile_paths["process"]),
+                filament_profiles=(profile_paths["filament"],),
+                output_dir=output,
+                data_dir=data,
+                inspect_model=True,
+                export_3mf_filename="sample-a.gcode.3mf",
+                timeout_seconds=180,
+            )
+            (root / "stdout.log").write_text(result.stdout, encoding="utf-8")
+            (root / "stderr.log").write_text(result.stderr, encoding="utf-8")
+            evidence = {
+                "orca_executable": str(capabilities.executable),
+                "orca_executable_sha256": capabilities.executable_sha256,
+                "orca_version_banner": capabilities.version_banner,
+                "argv": list(result.argv),
+                "returncode": result.returncode,
+                "timed_out": result.timed_out,
+                "sample_3mf_sha256": _sha256(sample),
+                "source_plate_sha256": _sha256(source),
+                "stdout_path": "stdout.log",
+                "stderr_path": "stderr.log",
+            }
+            if result.returncode == 0 and result.gcode_files:
+                validation = validate_grouped_ironing_gcode(
+                    result.gcode_files[0], {"Sample-A": candidate.overrides}
+                )
+                evidence["gcode"] = {
+                    "path": str(result.gcode_files[0]),
+                    "sha256": _sha256(result.gcode_files[0]),
+                    "size_bytes": result.gcode_files[0].stat().st_size,
+                    "validation": {
+                        "valid": validation.valid,
+                        "messages": list(validation.messages),
+                        "samples": {
+                            name: {
+                                "positive_extrusion_mm": item.positive_extrusion_mm,
+                                "extrusion_per_flow_percent": item.extrusion_per_flow_percent,
+                                "observed_speed_mm_s": list(item.observed_speed_mm_s),
+                                "ironing_extrusion_moves": item.ironing_extrusion_moves,
+                            }
+                            for name, item in validation.samples.items()
+                        },
+                    },
+                }
+                if result.exported_3mf_files:
+                    exported = result.exported_3mf_files[0]
+                    with zipfile.ZipFile(exported) as archive:
+                        members = archive.namelist()
+                        corrupt_member = archive.testzip()
+                        project_settings = json.loads(archive.read("Metadata/project_settings.config"))
+                        ET.fromstring(archive.read("Metadata/model_settings.config"))
+                        ET.fromstring(archive.read("Metadata/slice_info.config"))
+                        embedded_gcode = archive.read("Metadata/plate_1.gcode")
+                        sidecar_md5 = archive.read("Metadata/plate_1.gcode.md5").decode("ascii").strip()
+                    evidence["gcode_3mf"] = {
+                        "path": str(exported),
+                        "sha256": _sha256(exported),
+                        "size_bytes": exported.stat().st_size,
+                        "members": members,
+                        "zip_crc_test": "passed" if corrupt_member is None else f"failed: {corrupt_member}",
+                        "project_settings_top_level_key_count": len(project_settings),
+                        "embedded_gcode_matches_slice_output": embedded_gcode == result.gcode_files[0].read_bytes(),
+                        "gcode_md5_sidecar_matches": (
+                            sidecar_md5.casefold()
+                            == hashlib.md5(embedded_gcode, usedforsecurity=False).hexdigest().casefold()
+                        ),
+                    }
+                (root / "schema-evidence.json").write_text(
+                    json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                self.assertTrue(validation.valid, validation.messages)
+            else:
+                (root / "schema-evidence.json").write_text(
+                    json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+            self.assertFalse(result.timed_out, result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertEqual(len(result.gcode_files), 1, result.stderr or result.stdout)
+            self.assertEqual(len(result.exported_3mf_files), 1, result.stderr or result.stdout)
+            self.assertTrue(evidence["gcode_3mf"]["zip_crc_test"] == "passed")
+            self.assertTrue(evidence["gcode_3mf"]["embedded_gcode_matches_slice_output"])
+            self.assertTrue(evidence["gcode_3mf"]["gcode_md5_sidecar_matches"])
+
     def test_ironing_candidates_reach_gcode_with_explicit_values(self):
         profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
         documents = []

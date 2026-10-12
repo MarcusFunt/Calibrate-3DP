@@ -122,6 +122,7 @@ class OrcaSliceResult:
     stderr: str
     gcode_files: tuple[Path, ...]
     cancelled: bool = False
+    exported_3mf_files: tuple[Path, ...] = ()
 
 
 def parse_orca_help(help_text: str, *, returncode: int = 0) -> OrcaCliCapabilities:
@@ -352,8 +353,12 @@ class OrcaCli:
         filament_profiles: Sequence[str | Path],
         output_dir: str | Path,
         data_dir: str | Path,
+        inspect_model: bool = False,
+        export_3mf_filename: str | None = None,
     ) -> tuple[str, ...]:
-        """Build a shell-free argv for one model and a resolved profile set."""
+        """Build a shell-free argv for slicing and optional 3MF evidence export."""
+        if not isinstance(inspect_model, bool):
+            raise OrcaCliError("inspect_model must be a boolean")
         model = self._existing_file(model_path, "model")
         machines = tuple(self._profile_file(item) for item in machine_process_profiles)
         filaments = tuple(self._profile_file(item) for item in filament_profiles)
@@ -370,7 +375,23 @@ class OrcaCli:
         if output == data or output in data.parents or data in output.parents:
             raise OrcaCliError("output and data directories must be separate, non-overlapping folders")
 
-        return (
+        export_path: Path | None = None
+        if export_3mf_filename is not None:
+            if (
+                not isinstance(export_3mf_filename, str)
+                or not export_3mf_filename.strip()
+                or export_3mf_filename in {".", ".."}
+                or "/" in export_3mf_filename
+                or "\\" in export_3mf_filename
+            ):
+                raise OrcaCliError("3MF export must be a filename inside the isolated output directory")
+            if Path(export_3mf_filename).suffix.casefold() != ".3mf":
+                raise OrcaCliError("3MF export filename must end in .3mf")
+            export_path = output / export_3mf_filename
+            if export_path.exists():
+                raise OrcaCliError("3MF export filename already exists in the output directory")
+
+        argv = [
             str(self.executable),
             "--slice", "0",
             "--arrange", "0",
@@ -379,8 +400,15 @@ class OrcaCli:
             "--datadir", str(data),
             "--load-settings", ";".join(str(item) for item in machines),
             "--load-filaments", ";".join(str(item) for item in filaments),
-            str(model),
-        )
+        ]
+        if inspect_model:
+            argv.append("--info")
+        if export_path is not None:
+            # Orca resolves this action's filename relative to --outputdir;
+            # passing an absolute path makes it prepend outputdir twice.
+            argv.extend(("--export-3mf", export_3mf_filename))
+        argv.append(str(model))
+        return tuple(argv)
 
     def run_slice(
         self,
@@ -390,6 +418,8 @@ class OrcaCli:
         filament_profiles: Sequence[str | Path],
         output_dir: str | Path,
         data_dir: str | Path,
+        inspect_model: bool = False,
+        export_3mf_filename: str | None = None,
         timeout_seconds: float = 300,
         cancel_event: Event | None = None,
         output_callback: Callable[[str, str], None] | None = None,
@@ -408,6 +438,8 @@ class OrcaCli:
             filament_profiles=filament_profiles,
             output_dir=output_dir,
             data_dir=data_dir,
+            inspect_model=inspect_model,
+            export_3mf_filename=export_3mf_filename,
         )
         started_at = datetime.now(timezone.utc).isoformat()
         if cancel_event is None and output_callback is None:
@@ -446,6 +478,11 @@ class OrcaCli:
             (path for path in output.rglob("*") if path.is_file() and path.suffix.lower() == ".gcode"),
             key=lambda path: str(path).casefold(),
         ))
+        exported_3mf_files = ()
+        if export_3mf_filename is not None:
+            candidate = output / export_3mf_filename
+            if candidate.is_file():
+                exported_3mf_files = (candidate,)
         return OrcaSliceResult(
             argv=argv,
             started_at=started_at,
@@ -456,6 +493,7 @@ class OrcaCli:
             stderr=stderr,
             gcode_files=gcode_files,
             cancelled=cancelled,
+            exported_3mf_files=exported_3mf_files,
         )
 
     def _run_streaming(
