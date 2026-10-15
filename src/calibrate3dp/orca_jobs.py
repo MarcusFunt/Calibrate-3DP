@@ -148,7 +148,7 @@ def slice_ironing_experiment(
     profiles_dir.mkdir()
     machine_path = profiles_dir / "machine.json"
     filament_path = profiles_dir / "filament.json"
-    machine_payload = _flatten_profile(machine)
+    machine_payload = adapter.to_cli_machine_profile(machine)
     filament_payload = _flatten_profile(filament)
     _write_json(machine_path, machine_payload)
     _write_json(filament_path, filament_payload)

@@ -283,7 +283,7 @@ class GroupedOrcaGenerationService:
             "gcode_label_objects": "1",
         }
         cli_profiles = {
-            "machine": _flatten_profile(run.profiles.printer),
+            "machine": self._adapter.to_cli_machine_profile(run.profiles.printer),
             "process": self._adapter.to_cli_profile(
                 run.profiles.process,
                 name=f"{run.profiles.process.profile.name} [Calibrate3DP {run.run_id[-8:]}]",
@@ -622,17 +622,6 @@ class GroupedOrcaGenerationService:
             raise GroupedOrcaGenerationError(
                 f"{message}; the failed run record could not be finalized: {persist_error}"
             ) from persist_error
-
-
-def _flatten_profile(profile: ResolvedProfile) -> dict[str, Any]:
-    payload = dict(profile.settings)
-    payload.pop("inherits", None)
-    # Retain the source machine preset identity so process compatibility rules
-    # referring to its name continue to match the selected machine profile.
-    payload["name"] = profile.profile.name
-    payload["type"] = profile.profile.kind
-    json.dumps(payload, allow_nan=False)
-    return payload
 
 
 def _profile_identity(profile: ResolvedProfile, source_sha256: str | None) -> dict[str, Any]:

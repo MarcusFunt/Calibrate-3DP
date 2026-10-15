@@ -238,13 +238,50 @@ class OrcaProfileAdapter:
         candidate = deepcopy(dict(resolved.settings))
         candidate.pop("inherits", None)
         candidate["name"] = name
-        candidate["type"] = resolved.profile.kind
+        candidate["type"] = (
+            "machine" if resolved.profile.kind in {"machine", "printer"}
+            else resolved.profile.kind
+        )
         candidate.update(deepcopy(dict(patch)))
         try:
             json.dumps(candidate, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise InvalidProfilePatchError(
                 "resolved candidate profile must contain valid JSON values"
+            ) from exc
+        return candidate
+
+    def to_cli_machine_profile(self, resolved: ResolvedProfile) -> dict[str, Any]:
+        """Flatten a selected machine/printer preset for Orca's machine slot.
+
+        Orca's profile importer accepts this resolved profile as ``type: machine``
+        even when the source user preset is a printer alias. The output is a
+        fresh CLI document; the original profile and its provenance are unchanged.
+        """
+        if not isinstance(resolved, ResolvedProfile):
+            raise InvalidProfilePatchError("resolved must be a ResolvedProfile")
+        if resolved.profile.kind not in {"machine", "printer"}:
+            raise InvalidProfilePatchError(
+                "resolved must be a machine or printer profile for the Orca machine slot"
+            )
+        candidate = deepcopy(dict(resolved.settings))
+        candidate.pop("inherits", None)
+        # Orca applies process compatibility against the machine preset name.
+        # A user printer alias (for example, a host-configured copy) may not
+        # appear in the stock process preset's compatible_printers list, while
+        # its inherited machine preset does. Keep all resolved settings, but
+        # use the closest machine ancestor's identity in the isolated CLI doc.
+        compatible_machine = next(
+            (item for item in reversed(resolved.chain) if item.kind == "machine"),
+            resolved.profile,
+        )
+        candidate["name"] = compatible_machine.name
+        candidate["type"] = "machine"
+        try:
+            json.dumps(candidate, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise InvalidProfilePatchError(
+                "resolved machine candidate must contain valid JSON values"
             ) from exc
         return candidate
 

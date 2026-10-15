@@ -63,6 +63,31 @@ class OrcaProfileAdapterTests(unittest.TestCase):
                 settings_patch={"type": "filament"},
             )
 
+    def test_printer_alias_exports_machine_cli_type_without_mutating_source(self):
+        api = self.api()
+        parent = api.ProfileDocument(
+            name="RatRig Base", kind="machine", scope="system",
+            raw={"type": "machine", "name": "RatRig Base", "bed_size": [200, 200]},
+            source="base.json",
+        )
+        printer = api.ProfileDocument(
+            name="RatRig Selected", kind="printer", scope="user",
+            raw={"type": "printer", "name": "RatRig Selected", "inherits": "RatRig Base", "print_host": "Ratos.local"},
+            source="printer.json",
+        )
+        resolved = ProfileCatalog(
+            [parent, printer], parent_scopes={"user": ("system",)}
+        ).resolve("printer", "user", printer.name)
+
+        candidate = api.OrcaProfileAdapter().to_cli_machine_profile(resolved)
+
+        self.assertEqual(candidate["name"], "RatRig Base")
+        self.assertEqual(candidate["type"], "machine")
+        self.assertNotIn("inherits", candidate)
+        self.assertEqual(candidate["bed_size"], [200, 200])
+        self.assertEqual(printer.raw["type"], "printer")
+        self.assertEqual(printer.raw["inherits"], "RatRig Base")
+
     def test_imports_printer_bundle_and_resolves_profiles_without_extraction(self):
         api = self.api()
         parent = {"type": "process", "name": "Base", "ironing_flow": "10"}

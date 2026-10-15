@@ -33,7 +33,7 @@ from calibrate3dp.ironing import create_initial_ironing_experiment
 from calibrate3dp.orca_cli import OrcaCli, reconcile_orca_identity
 from calibrate3dp.orca_jobs import slice_ironing_experiment
 from calibrate3dp.orca_profiles import OrcaProfileAdapter
-from calibrate3dp.profiles import ProfileCatalog, ProfileDocument
+from calibrate3dp.profiles import ProfileCatalog, ProfileDocument, ProfileResolutionError
 
 
 _REQUIRED_ENV = ("ORCA_SLICER_EXE", "ORCA_PROFILE_ROOT")
@@ -58,24 +58,13 @@ def _integration_root(prefix: str):
 class OrcaSlicerIntegrationTests(unittest.TestCase):
     def test_standalone_first_sample_3mf_loads_and_applies_ironing_overrides(self):
         profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
-        documents = []
-        for kind in ("machine", "process", "filament"):
-            for path in (profile_root / kind).glob("*.json"):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
-                    documents.append(ProfileDocument(payload["name"], payload["type"], "orca-sample-import", payload, str(path)))
+        documents = _load_profile_documents(profile_root, scope="orca-sample-import")
         catalog = ProfileCatalog(documents)
         machine = catalog.resolve("machine", "orca-sample-import", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
         process = catalog.resolve("process", "orca-sample-import", os.environ.get("ORCA_PROCESS_PROFILE", "0.20mm Standard @Creality Ender3V2"))
         filament = catalog.resolve("filament", "orca-sample-import", os.environ.get("ORCA_FILAMENT_PROFILE", "Creality Generic PLA"))
         adapter = OrcaProfileAdapter()
-        machine_cli = dict(machine.settings)
-        machine_cli.pop("inherits", None)
-        machine_cli["name"] = machine.profile.name
-        machine_cli["type"] = machine.profile.kind
+        machine_cli = adapter.to_cli_machine_profile(machine)
         process_cli = adapter.to_cli_profile(
             process,
             name=process.profile.name + " [Calibrate3DP sample import]",
@@ -203,22 +192,7 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
 
     def test_ironing_candidates_reach_gcode_with_explicit_values(self):
         profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
-        documents = []
-        for kind in ("machine", "process", "filament"):
-            for path in (profile_root / kind).glob("*.json"):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-                    if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
-                        documents.append(ProfileDocument(
-                            payload["name"],
-                            payload["type"],
-                            "orca-integration",
-                            payload,
-                            str(path),
-                        ))
-                except (OSError, json.JSONDecodeError, ValueError):
-                    continue
-
+        documents = _load_profile_documents(profile_root, scope="orca-integration")
         catalog = ProfileCatalog(documents)
         machine = catalog.resolve(
             "machine",
@@ -278,15 +252,7 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
 
     def test_grouped_object_settings_are_applied_and_missing_override_is_rejected(self):
         profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
-        documents = []
-        for kind in ("machine", "process", "filament"):
-            for path in (profile_root / kind).glob("*.json"):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
-                    documents.append(ProfileDocument(payload["name"], payload["type"], "orca-grouped", payload, str(path)))
+        documents = _load_profile_documents(profile_root, scope="orca-grouped")
         catalog = ProfileCatalog(documents)
         machine = catalog.resolve("machine", "orca-grouped", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
         process = catalog.resolve("process", "orca-grouped", os.environ.get("ORCA_PROCESS_PROFILE", "0.20mm Standard @Creality Ender3V2"))
@@ -303,10 +269,7 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
                 "gcode_label_objects": "1",
             },
         )
-        machine_cli = dict(machine.settings)
-        machine_cli.pop("inherits", None)
-        machine_cli["name"] = machine.profile.name
-        machine_cli["type"] = machine.profile.kind
+        machine_cli = adapter.to_cli_machine_profile(machine)
         filament_cli = adapter.to_cli_profile(filament, name=filament.profile.name + " [Calibrate3DP grouped gate]")
         baseline = dict(process.settings)
         baseline.update({"ironing_type": "top", "ironing_flow": "5%", "ironing_speed": "5"})
@@ -515,17 +478,10 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
         from calibrate3dp.geometry.build123d_backend import Build123dPlateGeometryBackend
 
         profile_root = Path(os.environ["ORCA_PROFILE_ROOT"])
-        documents = []
-        for kind in ("machine", "process", "filament"):
-            for path in (profile_root / kind).glob("*.json"):
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("name"), str) and isinstance(payload.get("type"), str):
-                    documents.append(ProfileDocument(payload["name"], payload["type"], "orca-build123d", payload, str(path)))
+        documents = _load_profile_documents(profile_root, scope="orca-build123d")
         catalog = ProfileCatalog(documents)
-        machine = catalog.resolve("machine", "orca-build123d", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
+        machine_kind = os.environ.get("ORCA_MACHINE_PROFILE_KIND", "machine")
+        machine = catalog.resolve(machine_kind, "orca-build123d", os.environ.get("ORCA_MACHINE_PROFILE", "Creality Ender-3 V2 0.4 nozzle"))
         process = catalog.resolve("process", "orca-build123d", os.environ.get("ORCA_PROCESS_PROFILE", "0.20mm Standard @Creality Ender3V2"))
         filament = catalog.resolve("filament", "orca-build123d", os.environ.get("ORCA_FILAMENT_PROFILE", "Creality Generic PLA"))
         plan = create_initial_ironing_experiment(
@@ -557,9 +513,7 @@ class OrcaSlicerIntegrationTests(unittest.TestCase):
             for label, candidate in zip("ABCDEFGHI", plan.candidates, strict=True)
         }
         adapter = OrcaProfileAdapter()
-        machine_cli = dict(machine.settings)
-        machine_cli.pop("inherits", None)
-        machine_cli["name"], machine_cli["type"] = machine.profile.name, machine.profile.kind
+        machine_cli = adapter.to_cli_machine_profile(machine)
         process_cli = adapter.to_cli_profile(
             process,
             name=process.profile.name + " [Calibrate3DP build123d gate]",
@@ -679,6 +633,19 @@ def _numbers(value: str) -> tuple[float, ...]:
         return tuple(float(item.strip()) for item in value.split(","))
     except ValueError as exc:
         raise ValueError("flow/speed environment variables must be comma-separated numbers") from exc
+
+
+def _load_profile_documents(profile_root: Path, *, scope: str) -> list[ProfileDocument]:
+    documents = []
+    for kind in ("machine", "process", "filament"):
+        for path in (profile_root / kind).glob("*.json"):
+            try:
+                documents.append(
+                    ProfileDocument.from_json_file(path, scope=scope, kind_hint=kind)
+                )
+            except (OSError, UnicodeDecodeError, ProfileResolutionError):
+                continue
+    return documents
 
 
 def _sha256(path: Path) -> str:

@@ -82,6 +82,9 @@ def validate_gcode_preflight(
     unsupported: set[str] = set()
     observed: set[str] = set()
     temperature_commands: list[Mapping[str, Any]] = []
+    active_temperature_targets: dict[str, Mapping[str, Any]] = {}
+    checked_temperature_states: set[tuple[str, int]] = set()
+    temperature_states_valid = True
     printable = None
     keepouts = ()
     try:
@@ -124,6 +127,32 @@ def validate_gcode_preflight(
         if min_temperature[kind] is None or max_temperature[kind] is None:
             unverified.append(f"{kind.capitalize()} temperature limits are unavailable or incomplete.")
 
+    def check_temperature_state_for_extrusion(line_no: int) -> None:
+        nonlocal temperature_states_valid
+        for kind in ("nozzle", "bed"):
+            target_info = active_temperature_targets.get(kind)
+            if target_info is None:
+                continue
+            target_line = int(target_info["line"])
+            state_key = (kind, target_line)
+            if state_key in checked_temperature_states:
+                continue
+            checked_temperature_states.add(state_key)
+            if target_info["heater_off"]:
+                errors.append(
+                    f"Line {line_no}: {kind} heater was turned off at line {target_line} before an extrusion."
+                )
+                temperature_states_valid = False
+                continue
+            lower = min_temperature[kind]
+            target = float(target_info["target_c"])
+            if lower is not None and target < lower:
+                errors.append(
+                    f"Line {line_no}: {kind} target {target:g}°C from line {target_line} "
+                    f"is below configured minimum {lower:g}°C during extrusion."
+                )
+                temperature_states_valid = False
+
     for line_no, original in enumerate(text.splitlines(), start=1):
         line = original.partition(";")[0].strip().upper()
         if not line:
@@ -132,6 +161,16 @@ def validate_gcode_preflight(
         words = {letter: float(value) for letter, value in _WORD.findall(line)}
         command_match = re.search(r"\b([GMT])\s*(\d+(?:\.\d+)?)", line)
         if command_match is None:
+            first_token = line.split(maxsplit=1)[0]
+            parameter_word = re.fullmatch(
+                r"[XYZEF][+-]?(?:\d+(?:\.\d*)?|\.\d+)", first_token
+            )
+            named_command = re.match(r"^([A-Z][A-Z0-9_]*)\b", line)
+            if named_command and not parameter_word:
+                command = named_command.group(1)
+                observed.add(command)
+                unsupported.add(command)
+                continue
             if any(key in words for key in "XYZEF") and motion_mode in {"G0", "G1"}:
                 command = motion_mode
             else:
@@ -187,7 +226,9 @@ def validate_gcode_preflight(
                 continue
             blocking_wait = command in {"M109", "M190"}
             heater_off = target == 0
-            temperature_commands.append({"line": line_no, "command": command, "kind": kind, "target_c": target, "blocking_wait": blocking_wait, "heater_off": heater_off})
+            temperature_info = {"line": line_no, "command": command, "kind": kind, "target_c": target, "blocking_wait": blocking_wait, "heater_off": heater_off}
+            temperature_commands.append(temperature_info)
+            active_temperature_targets[kind] = temperature_info
             if blocking_wait and not heater_off:
                 temperature_waits[kind] = True
             if target < 0:
@@ -199,7 +240,7 @@ def validate_gcode_preflight(
             lower, upper = min_temperature[kind], max_temperature[kind]
             if lower is None or upper is None:
                 unverified.append(f"{kind.capitalize()} temperature limits are unavailable for an observed {kind} target.")
-            elif target < lower or target > upper:
+            elif target > upper:
                 errors.append(f"Line {line_no}: {kind} target {target:g}°C is outside configured limits {lower:g}..{upper:g}°C.")
             continue
         if command not in {"G0", "G1"}:
@@ -234,6 +275,7 @@ def validate_gcode_preflight(
                 extrusion_count += 1
                 if first_extrusion_line is None:
                     first_extrusion_line = line_no
+                check_temperature_state_for_extrusion(line_no)
                 if any(current[axis] is None for axis in "XYZ"):
                     unverified.append(f"Line {line_no}: stationary extrusion occurs at an unresolved XYZ position.")
                 else:
@@ -251,6 +293,7 @@ def validate_gcode_preflight(
             extrusion_count += 1
             if first_extrusion_line is None:
                 first_extrusion_line = line_no
+            check_temperature_state_for_extrusion(line_no)
         else:
             travel_count += 1
         if any(target[axis] is None for axis in "XYZ") or any(current[axis] is None for axis in "XYZ"):
@@ -280,7 +323,7 @@ def validate_gcode_preflight(
     if not temperature_commands:
         unverified.append("No nozzle or bed setpoint command was recognized.")
     required_temperature_kinds = {"nozzle", "bed"}
-    temperature_sequence_verified = first_extrusion_line is not None
+    temperature_sequence_verified = first_extrusion_line is not None and temperature_states_valid
     if first_extrusion_line is not None:
         for kind in sorted(required_temperature_kinds):
             preceding = [

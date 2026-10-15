@@ -70,6 +70,22 @@ G1 X2 Y0 E0.5
         self.assertIn("M1002", report.unsupported_commands)
         self.assertFalse(report.parser_coverage_complete)
 
+    def test_firmware_macro_commands_are_explicitly_unsupported(self):
+        report = validate_gcode_preflight(
+            "EXCLUDE_OBJECT_DEFINE NAME=Sample-A CENTER=10,10 POLYGON=[[1,1],[20,1],[20,20]]\n"
+            "START_PRINT EXTRUDER_TEMP=220 BED_TEMP=60\n"
+            "SET_PRESSURE_ADVANCE ADVANCE=0.05\n"
+            "SET_VELOCITY_LIMIT ACCEL=500\n",
+            MACHINE,
+            FILAMENT,
+        )
+        self.assertTrue(
+            {"EXCLUDE_OBJECT_DEFINE", "START_PRINT", "SET_PRESSURE_ADVANCE", "SET_VELOCITY_LIMIT"}
+            <= set(report.unsupported_commands)
+        )
+        self.assertEqual(report.status, "unsupported")
+        self.assertFalse(report.parser_coverage_complete)
+
     def test_missing_temperature_limits_remain_unverified_not_passed(self):
         report = validate_gcode_preflight(
             "G21\nG90\nG92 X5 Y5 Z0 E0\nG1 X6 Y6 Z1 E1\nM104 S210\nM140 S60\n",
@@ -87,6 +103,37 @@ G1 X2 Y0 E0.5
             FILAMENT,
         )
         self.assertTrue(any("outside configured limits" in message for message in report.errors))
+
+    def test_below_minimum_standby_target_is_allowed_when_print_target_is_valid(self):
+        report = validate_gcode_preflight(
+            "G21\nG90\nM104 S150\nM140 S60\nM104 S205\n"
+            "M190 S60\nM109 S205\nG92 X5 Y5 Z0 E0\nG1 X6 Y6 Z1 E1\n",
+            MACHINE,
+            FILAMENT,
+        )
+        self.assertTrue(report.passed, report.errors + report.unverified)
+        self.assertFalse(any("below configured minimum" in message for message in report.errors))
+
+    def test_below_minimum_target_at_first_extrusion_fails(self):
+        report = validate_gcode_preflight(
+            "G21\nG90\nM104 S150\nM140 S60\nM190 S60\nM109 S150\n"
+            "G92 X5 Y5 Z0 E0\nG1 X6 Y6 Z1 E1\n",
+            MACHINE,
+            FILAMENT,
+        )
+        self.assertFalse(report.passed)
+        self.assertTrue(any("below configured minimum" in message for message in report.errors))
+
+    def test_subminimum_target_after_first_extrusion_blocks_later_extrusion(self):
+        report = validate_gcode_preflight(
+            "G21\nG90\nM104 S205\nM140 S60\nM190 S60\nM109 S205\n"
+            "G92 X5 Y5 Z0 E0\nG1 X6 Y6 Z1 E1\nM104 S150\nG1 X7 Y6 E2\n",
+            MACHINE,
+            FILAMENT,
+        )
+        self.assertFalse(report.passed)
+        self.assertFalse(report.temperature_sequence_verified)
+        self.assertTrue(any("below configured minimum" in message for message in report.errors))
 
     def test_zero_temperature_targets_are_recorded_as_heater_shutdowns(self):
         report = validate_gcode_preflight(
